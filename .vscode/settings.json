@@ -1,0 +1,40 @@
+{
+  "[typescript]": {
+    "editor.defaultFormatter": "vscode.typescript-language-features"
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "vscode.typescript-language-features"
+  },
+  "[json]": {
+    "editor.defaultFormatter": "vscode.json-language-features"
+  },
+  "files.exclude": {
+    // 排除默认的文件和目录
+    "node_modules": true,
+    "out": true,
+    ".eslintcache": true,
+    ".editorconfig": true,
+    ".prettierignore": true,
+    ".prettierrc.yaml": true,
+    "dev-app-update.yml": true,
+    ".npmrc": true,
+
+    // 可能需要调整的文件
+    "tsconfig.web.json": true,
+    "tsconfig.node.json": true,
+    "tsconfig.json": true,
+    "README.md": true,
+    "package-lock.json": true,
+    "eslint.config.mjs": true,
+    "electron.vite.config.ts": true,
+    "electron-builder.yml": true,
+
+    // 渲染页面/源码相关文件
+    //"src/renderer/index.html": true,
+    "src/main/tsconfig.json": true,
+
+    // 渲染页面/环境变量相关文件
+    "src/renderer/src/env.d.ts": true,
+    "src/main/shims-process.d.ts": true
+  }
+}

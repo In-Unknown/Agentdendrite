@@ -1,0 +1,43 @@
+### 基础配置
+@hostname = localhost
+@port = 5068
+@baseUrl = http://{{hostname}}:{{port}}/api/Llm
+
+### 1. 测试流式输出 (Stream)
+# 说明：此接口会读取历史记录，保存新消息并返回流式内容
+POST {{baseUrl}}/stream
+Content-Type: application/json
+
+[
+  {
+    "role": "user",
+    "content": "\u0023\u0023\u0023"
+  }
+]
+
+###
+
+### 2. 测试获取完整回复 (Full Response)
+# 说明：此接口会等待 AI 生成完毕后一次性返回 JSON
+POST {{baseUrl}}/full
+Content-Type: application/json
+
+[
+  {
+    "role": "user",
+    "content": "写一首关于编程的小诗。"
+  }
+]
+
+###
+
+### 3. 测试获取历史聊天记录 (Clone)
+# 说明：默认读取 chatData.jsonl
+GET {{baseUrl}}/clone?id=chatData.jsonl
+Accept: application/json
+
+###
+
+### 4. 测试获取指定 ID 的历史记录
+GET {{baseUrl}}/clone?id=test-history.jsonl
+Accept: application/json
