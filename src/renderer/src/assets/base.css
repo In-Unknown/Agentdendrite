@@ -42,6 +42,7 @@
 
   /* 边框、分割线 */
   --color-border: var(--palette-gray-500);
+  --color-border-black: var(--palette-gray-200);
 
   /* 文字（按层级）*/
   --color-text: var(--palette-gray-900);
