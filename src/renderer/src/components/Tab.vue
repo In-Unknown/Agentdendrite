@@ -38,7 +38,7 @@ const tabSize = computed(() => ({
       </button>
     </div>
     <div class="tab__content">
-      <div class="tab__content-safety">
+      <div class="tab__content-safety scrollbar">
         <slot />
       </div>
     </div>
@@ -52,8 +52,6 @@ const tabSize = computed(() => ({
   --tab-body-bg: var(--color-bg-200); /* 主体内容背景 */
   --tab-border-color: var(--color-border); /* 边框颜色 */
   --tab-text-color: var(--color-text); /* 文字颜色 */
-  --tab-scrollbar-track: var(--color-bg-500); /* 滚动条槽颜色 */
-  --tab-scrollbar-thumb: var(--palette-gray-700); /* 滚动条滑块颜色 */
   /* ======================================================= */
 
   --tab-title-size: 13px;
@@ -100,23 +98,8 @@ const tabSize = computed(() => ({
   display: block;
   width: 100%;
   height: 100%;
-  padding: 16px;
   overflow: auto;
   color: var(--tab-text-color);
-  /* 滚动条颜色也同步 */
-  scrollbar-color: var(--tab-scrollbar-thumb) var(--tab-scrollbar-track);
-}
-
-/* 兼容 Webkit 的滚动条颜色同步 */
-.tab__content-safety::-webkit-scrollbar-track,
-.tab__content-safety::-webkit-scrollbar-button {
-  background: var(--tab-scrollbar-track);
-}
-
-.tab__content-safety::-webkit-scrollbar-thumb {
-  background: var(--tab-scrollbar-thumb);
-  border: 4px solid var(--tab-scrollbar-track);
-  border-radius: 999px;
 }
 
 /* 关闭按钮基础样式 */
