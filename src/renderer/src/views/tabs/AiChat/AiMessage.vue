@@ -103,6 +103,9 @@ const thinkBlocks = computed(() => splitToBlocks(props.thinkContent))
 .ai-message {
   align-self: flex-start;
   width: 100%;
+
+  min-height: 0;
+  min-width: 0;
   font-size: 14px;
   line-height: 1.6;
   margin-bottom: 24px;

@@ -7,7 +7,7 @@
       </button>
     </div>
     <!-- eslint-disable-next-line vue/no-v-html -->
-    <div class="code-content" v-html="highlightedHtml"></div>
+    <div class="code-content scrollbar" v-html="highlightedHtml"></div>
   </div>
 </template>
 

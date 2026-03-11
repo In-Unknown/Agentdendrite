@@ -1,0 +1,33 @@
+/* 1. 基础尺寸：固定 10px，方便交互 */
+.scrollbar--rail::-webkit-scrollbar {
+  width: 11px !important;
+  height: 10px !important;
+}
+
+/* 2. 轨道：通过 4px + 4px 的整数边框，挤出中间 2px 的细线 */
+.scrollbar--rail::-webkit-scrollbar-track {
+  background-color: transparent !important;
+  /* 4px (左) + 2px (线) + 4px (右) = 10px */
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  background-clip: padding-box;
+  
+  /* 导轨颜色：使用 400 确保 2px 的线足够纤细 */
+  background-image: linear-gradient(var(--palette-gray-400), var(--palette-gray-400));
+}
+
+/* 3. 滑块：厚实版 */
+.scrollbar--rail::-webkit-scrollbar-thumb {
+  background-color: var(--palette-gray-700);
+  border-radius: 10px;
+  
+  /* 透明边框设为 1px，滑块视觉宽度为 8px (10 - 1 - 1) */
+  /* 8px 的滑块在 2px 的导轨上滑动，对比非常明显 */
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+/* 4. 交互：滑块悬停 */
+.scrollbar--rail::-webkit-scrollbar-thumb:hover {
+  background-color: var(--palette-gray-800) !important;
+}
