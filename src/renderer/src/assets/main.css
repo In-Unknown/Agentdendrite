@@ -1,5 +1,6 @@
 @import './base.css';
 @import './skins/scrollbar.css';
-@import './skins/scrollbar-thin-hover.css';
+@import './skins/scrollbar-ghost.css';
+@import './skins/scrollbar-rail.css';
 
 /* Add your global styles here */

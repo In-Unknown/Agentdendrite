@@ -26,6 +26,8 @@ const tabSize = computed(() => ({
   height: typeof props.height === 'number' ? `${props.height}px` : props.height
 }))
 
+const isSingleton = computed(() => props.leafData.type === 'singleton')
+
 // 1. 批量映射 tabs 文件夹下所有的组件
 const tabModules = import.meta.glob('../views/tabs/*/index.vue')
 
@@ -47,10 +49,13 @@ const currentComponent = computed((): Component | null => {
   return null
 })
 
-// 4. 根据 tabHeaderPosition 计算容器布局 class
 const layoutClass = computed(() => {
   const pos = props.leafData.tabHeaderPosition || 'top'
-  return `tab--pos-${pos}`
+  const classes = [`tab--pos-${pos}`]
+  if (isSingleton.value) {
+    classes.push('tab--singleton')
+  }
+  return classes
 })
 
 // 5. 切换标签页
@@ -61,7 +66,7 @@ const switchTab = (tabName: string): void => {
 
 <template>
   <div class="tab" :class="layoutClass" :style="tabSize">
-    <div class="tab__header">
+    <div v-if="!isSingleton" class="tab__header">
       <div class="tab__list scrollbar--thin-hover">
         <div
           v-for="tag in leafData.data"
@@ -81,7 +86,7 @@ const switchTab = (tabName: string): void => {
       </button>
     </div>
     <div class="tab__content">
-      <div class="tab__content-safety scrollbar">
+      <div class="tab__content-safety">
         <component :is="currentComponent" v-if="currentComponent" />
         <div v-else class="tab__empty">未找到对应组件: {{ activeTag?.tabName }}</div>
       </div>
@@ -107,6 +112,12 @@ const switchTab = (tabName: string): void => {
   border: 1px solid var(--tab-border-color);
   background: var(--tab-body-bg);
   overflow: hidden;
+  margin: 2px;
+
+  /* 覆盖行内宽高的限制，让 flex 自己去计算尺寸 */
+  width: auto !important;
+  height: auto !important;
+  flex: 1; /* 自动填满父级剩余空间 */
 }
 
 /* --- 1. 布局方向控制 --- */
@@ -313,13 +324,23 @@ const switchTab = (tabName: string): void => {
   flex: 1;
   min-height: 0;
   background: var(--tab-body-bg);
+
+  min-height: 0;
+  min-width: 0;
 }
+
 .tab__content-safety {
-  display: block;
+  /* 修改这里！让它变成 flex 容器，严防死守不准它自己滚动 */
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
-  overflow: auto;
+  overflow: hidden; /* 关键：干掉父级的滚动条！ */
   color: var(--tab-text-color);
+}
+
+.tab--singleton .tab__content-safety {
+  overflow: hidden;
 }
 
 .tab__close {
@@ -360,5 +381,7 @@ const switchTab = (tabName: string): void => {
   align-items: center;
   height: 100%;
   color: var(--color-text-muted);
+  text-align: center;
+  padding: 0 10px;
 }
 </style>

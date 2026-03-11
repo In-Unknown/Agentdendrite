@@ -98,6 +98,19 @@ const onEnterKey = (e: KeyboardEvent): void => {
 .chat-input-wrapper {
   flex-shrink: 0;
   padding: 0 16px 16px;
+
+  /* --- 新增代码 --- */
+  /* 基础宽度占满 */
+  width: 100%;
+
+  /* 与消息列表一致的最大宽度 */
+  max-width: 800px;
+
+  /* 水平居中 */
+  margin: 0 auto;
+
+  /* 确保 padding 不撑大宽度 */
+  box-sizing: border-box;
 }
 
 .chat-input-box {
