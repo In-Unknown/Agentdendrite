@@ -67,7 +67,7 @@ const switchTab = (tabName: string): void => {
 <template>
   <div class="tab" :class="layoutClass" :style="tabSize">
     <div v-if="!isSingleton" class="tab__header">
-      <div class="tab__list scrollbar--thin-hover">
+      <div class="tab__list scrollbar--ghost">
         <div
           v-for="tag in leafData.data"
           :key="tag.tabName"
@@ -102,22 +102,25 @@ const switchTab = (tabName: string): void => {
   --tab-border-color: var(--color-border);
   --tab-border-color-black: var(--color-border-black);
   --tab-text-color: var(--color-text);
-  /* ======================================================= */
 
+  /* ======================================================= */
   --tab-title-size: 13px;
   --tab-icon-size: calc(var(--tab-title-size) * 1.35);
 
   display: flex;
   min-width: 0;
-  border: 1px solid var(--tab-border-color);
   background: var(--tab-body-bg);
   overflow: hidden;
-  margin: 2px;
+
+  /* ========================= 元素间距与描边 ========================= */
+  --m-val: 0;
+  margin: calc(var(--m-val) * 1px);
+  border: clamp(0.5px, var(--m-val) * 1000px, 1px) solid var(--tab-border-color);
 
   /* 覆盖行内宽高的限制，让 flex 自己去计算尺寸 */
   width: auto !important;
   height: auto !important;
-  flex: 1; /* 自动填满父级剩余空间 */
+  flex: 1;
 }
 
 /* --- 1. 布局方向控制 --- */
@@ -135,6 +138,14 @@ const switchTab = (tabName: string): void => {
 }
 
 /* --- 2. Header & List 基础尺寸与滚动位置 --- */
+.tab__header {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  background: var(--tab-header-bg);
+  user-select: none;
+  padding: 0;
+}
 .tab--pos-top .tab__header,
 .tab--pos-bottom .tab__header {
   align-items: center;
@@ -146,57 +157,42 @@ const switchTab = (tabName: string): void => {
   width: 32px;
 }
 
-.tab__header {
-  position: relative;
-  display: flex;
-  justify-content: space-between;
-  background: var(--tab-header-bg);
-  user-select: none;
-  padding: 0;
-}
-
 .tab__list {
   display: flex;
   flex: 1;
   height: 100%;
+  box-sizing: border-box;
 }
 
-/* 顶部模式：滚动条在最顶 */
-.tab--pos-top .tab__list {
+/* 顶部与底部模式滚动 */
+.tab--pos-top .tab__list,
+.tab--pos-bottom .tab__list {
   overflow-x: auto;
   overflow-x: overlay;
   overflow-y: hidden;
+}
+/* 顶部模式专属翻转 */
+.tab--pos-top .tab__list {
   transform: scaleY(-1);
 }
 .tab--pos-top .tab__item {
   transform: scaleY(-1);
 }
 
-/* 底部模式 */
-.tab--pos-bottom .tab__list {
-  overflow-x: auto;
-  overflow-x: overlay;
-  overflow-y: hidden;
-}
-
-/* 左侧模式：滚动条在最左 */
-.tab--pos-left .tab__list {
-  flex-direction: column;
-  overflow-y: auto;
-  overflow-y: overlay;
-  overflow-x: hidden;
-  direction: rtl;
-}
-.tab--pos-left .tab__item {
-  direction: ltr;
-}
-
-/* 右侧模式 */
+/* 左侧与右侧模式滚动 */
+.tab--pos-left .tab__list,
 .tab--pos-right .tab__list {
   flex-direction: column;
   overflow-y: auto;
   overflow-y: overlay;
   overflow-x: hidden;
+}
+/* 左侧模式专属排版方向 */
+.tab--pos-left .tab__list {
+  direction: rtl;
+}
+.tab--pos-left .tab__item {
+  direction: ltr;
 }
 
 /* --- 3. 分割线内阴影 --- */
@@ -229,7 +225,7 @@ const switchTab = (tabName: string): void => {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid transparent; /* 预留边框占位，防止抖动 */
+  border: 1px solid transparent; /* 完美保留原版：预留边框占位，防止抖动 */
 }
 
 /* 侧边模式文字旋转 */
@@ -242,7 +238,7 @@ const switchTab = (tabName: string): void => {
   color: var(--palette-white);
 }
 
-/* A. 激活状态标签：层级最高 */
+/* A. 激活状态标签 */
 .tab__item.is-active {
   color: var(--tab-text-color);
   background: var(--tab-body-bg);
@@ -250,97 +246,76 @@ const switchTab = (tabName: string): void => {
   z-index: 5;
 }
 
-/* B. 非激活状态标签：深色边框 */
+/* B. 非激活状态标签：深色边框*/
 .tab__item:not(.is-active) {
   border-color: var(--tab-border-color-black);
   z-index: 1;
 }
 
-/* C. 去除靠近“内容区”那一侧的边框 */
-.tab--pos-top .tab__item {
-  border-bottom: none; /* 原有的：靠内容区 */
-  border-top: none; /* 新增的：靠容器外侧 */
-}
+/* C. 去除不必要的边框 (保留黑线只在需要的边缘显示) */
+.tab--pos-top .tab__item,
 .tab--pos-bottom .tab__item {
-  border-top: none; /* 原有的：靠内容区 */
-  border-bottom: none; /* 新增的：靠容器外侧 */
+  border-top: none;
+  border-bottom: none;
 }
-.tab--pos-left .tab__item {
-  border-right: none; /* 原有的：靠内容区 */
-  border-left: none; /* 新增的：靠容器外侧 */
-}
+.tab--pos-left .tab__item,
 .tab--pos-right .tab__item {
-  border-left: none; /* 原有的：靠内容区 */
-  border-right: none; /* 新增的：靠容器外侧 */
+  border-left: none;
+  border-right: none;
 }
 
 /* D. 邻居与边缘逻辑：去除多余线条 */
-
 /* --- 上/下 布局模式 (水平排列) --- */
-.tab--pos-top .tab__list,
-.tab--pos-bottom .tab__list {
-  .tab__item + .tab__item {
-    margin-left: -1px;
-  }
-  /* 第一个标签：去除左侧边框（接壤容器边缘） */
-  .tab__item:first-child {
-    border-left-color: transparent !important;
-  }
-  /* 靠近激活标签的非激活标签：隐藏交界线 */
-  .tab__item:not(.is-active):has(+ .is-active) {
-    border-right-color: transparent;
-  }
-  .is-active + .tab__item:not(.is-active) {
-    border-left-color: transparent;
-  }
+.tab--pos-top .tab__item + .tab__item,
+.tab--pos-bottom .tab__item + .tab__item {
+  margin-left: -1px;
+}
+.tab--pos-top .tab__item:first-child,
+.tab--pos-bottom .tab__item:first-child {
+  border-left-color: transparent !important;
+}
+.tab--pos-top .tab__item:not(.is-active):has(+ .is-active),
+.tab--pos-bottom .tab__item:not(.is-active):has(+ .is-active) {
+  border-right-color: transparent;
+}
+.tab--pos-top .is-active + .tab__item:not(.is-active),
+.tab--pos-bottom .is-active + .tab__item:not(.is-active) {
+  border-left-color: transparent;
 }
 
 /* --- 左/右 布局模式 (垂直排列) --- */
-.tab--pos-left .tab__list,
-.tab--pos-right .tab__list {
-  .tab__item + .tab__item {
-    margin-top: -1px;
-  }
-  /* 第一个标签：去除顶侧边框（接壤容器边缘） */
-  .tab__item:first-child {
-    border-top-color: transparent !important;
-  }
-  /* 靠近激活标签的非激活标签：隐藏交界线 */
-  .tab__item:not(.is-active):has(+ .is-active) {
-    border-bottom-color: transparent;
-  }
-  .is-active + .tab__item:not(.is-active) {
-    border-top-color: transparent;
-  }
+.tab--pos-left .tab__item + .tab__item,
+.tab--pos-right .tab__item + .tab__item {
+  margin-top: -1px;
 }
-
-.tab__item:first-child {
-  margin-left: 0 !important;
-  margin-top: 0 !important;
+.tab--pos-left .tab__item:first-child,
+.tab--pos-right .tab__item:first-child {
+  border-top-color: transparent !important;
+}
+.tab--pos-left .tab__item:not(.is-active):has(+ .is-active),
+.tab--pos-right .tab__item:not(.is-active):has(+ .is-active) {
+  border-bottom-color: transparent;
+}
+.tab--pos-left .is-active + .tab__item:not(.is-active),
+.tab--pos-right .is-active + .tab__item:not(.is-active) {
+  border-top-color: transparent;
 }
 
 /* --- 5. 其他组件样式 --- */
 .tab__content {
   flex: 1;
   min-height: 0;
-  background: var(--tab-body-bg);
-
-  min-height: 0;
   min-width: 0;
+  background: var(--tab-body-bg);
 }
 
 .tab__content-safety {
-  /* 修改这里！让它变成 flex 容器，严防死守不准它自己滚动 */
   display: flex;
   flex-direction: column;
   width: 100%;
   height: 100%;
-  overflow: hidden; /* 关键：干掉父级的滚动条！ */
-  color: var(--tab-text-color);
-}
-
-.tab--singleton .tab__content-safety {
   overflow: hidden;
+  color: var(--tab-text-color);
 }
 
 .tab__close {
@@ -353,6 +328,7 @@ const switchTab = (tabName: string): void => {
   cursor: pointer;
   padding: 0;
   flex-shrink: 0;
+  pointer-events: none;
 }
 .tab--pos-top .tab__close,
 .tab--pos-bottom .tab__close {
@@ -367,12 +343,15 @@ const switchTab = (tabName: string): void => {
 .tab__close:hover {
   color: var(--palette-white);
 }
+
 .tab__close-icon {
   width: var(--tab-icon-size);
   height: var(--tab-icon-size);
   stroke: currentColor;
   stroke-width: 2.2;
   stroke-linecap: round;
+  pointer-events: auto;
+  cursor: pointer; /* 确保鼠标悬停时依然显示小手 */
 }
 
 .tab__empty {
@@ -383,5 +362,29 @@ const switchTab = (tabName: string): void => {
   color: var(--color-text-muted);
   text-align: center;
   padding: 0 10px;
+}
+
+/* ================= 滚动条缝隙修补 (轨道画线法) ================= */
+/* 巧妙利用局部重写：只在滚动条出现时，让透明轨道自带一根封边线 */
+
+/* 1. 水平排列 (Top / Bottom) */
+/* 无论是在顶部还是底部，横向滚动条的物理位置都在内容下方。
+   所以给轨道的“上方 (top)”加一条 1px 的内阴影线，刚好和上方的标签相连。*/
+.tab--pos-top .tab__list::-webkit-scrollbar-track,
+.tab--pos-bottom .tab__list::-webkit-scrollbar-track {
+  /* 使用 inset 内阴影画线，绝对不会影响 4px 的轨道厚度 */
+  box-shadow: inset 0 1px 0 0 var(--tab-border-color-black) !important;
+}
+
+/* 2. 垂直排列：左侧模式 (Left) */
+/* 左侧使用了 direction: rtl，纵向滚动条在左侧，它接触标签的面是“右边缘” */
+.tab--pos-left .tab__list::-webkit-scrollbar-track {
+  box-shadow: inset -1px 0 0 0 var(--tab-border-color-black) !important;
+}
+
+/* 3. 垂直排列：右侧模式 (Right) */
+/* 正常 ltr，纵向滚动条在右侧，它接触标签的面是“左边缘” */
+.tab--pos-right .tab__list::-webkit-scrollbar-track {
+  box-shadow: inset 1px 0 0 0 var(--tab-border-color-black) !important;
 }
 </style>

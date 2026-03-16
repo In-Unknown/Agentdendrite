@@ -12,6 +12,7 @@
           ref="textareaRef"
           v-model="input"
           rows="1"
+          class="chat-input-textarea scrollbar"
           placeholder="您正在与 Builder 聊天"
           @input="adjustTextareaHeight"
           @keydown.enter="onEnterKey"
