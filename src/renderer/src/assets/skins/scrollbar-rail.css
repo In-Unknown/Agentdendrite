@@ -1,3 +1,4 @@
+/* src/renderer/src/assets/skins/scrollbar-rail.css */
 /* 1. 基础尺寸：固定 10px，方便交互 */
 .scrollbar--rail::-webkit-scrollbar {
   width: 11px !important;

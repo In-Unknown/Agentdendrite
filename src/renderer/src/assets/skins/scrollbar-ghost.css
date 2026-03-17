@@ -1,3 +1,4 @@
+/* src/renderer/src/assets/skins/scrollbar-ghost.css */
 /* 1. 基础尺寸：定义滚动条宽度和高度 */
 .scrollbar--ghost::-webkit-scrollbar {
   width: 4px !important;

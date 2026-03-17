@@ -1,3 +1,4 @@
+// src/renderer/src/features/layout/models/PageLayout.ts
 /**
  * 1. 基础枚举与叶子定义
  */
@@ -54,6 +55,7 @@ export interface CanvasTagFolderData {
   ratio: number & { __brand: '0-1-range' }
   direction: LayoutDirection
   data: TagFolderItem[]
+  protected?: boolean
 }
 
 // ==========================================================
@@ -62,9 +64,9 @@ export interface CanvasTagFolderData {
 
 /**
  * 自由项联合类型 (FreeFolderItem)
- * 允许在自由画布数组中混装“自由壳”、“自由画布”与“全屏自由画布”
+ * 仅允许在自由画布数组中嵌套"自由壳"与"有尺寸的自由画布"
  */
-export type FreeFolderItem = ShellFreeFolderData | CanvasFreeFolderData | FullCanvasFreeFolderData
+export type FreeFolderItem = ShellFreeFolderData | CanvasFreeFolderData
 
 /**
  * 自由标签组容器壳 (Free Shell)
@@ -75,6 +77,7 @@ export interface ShellFreeFolderData {
   id: string
   position: [number, number]
   size: [number, number]
+  zIndex: number
   backgroundColor: string
   data: [TagLeafData]
 }
@@ -88,8 +91,10 @@ export interface CanvasFreeFolderData {
   id: string
   position: [number, number]
   size: [number, number]
+  zIndex: number
   backgroundColor: string
   data: FreeFolderItem[]
+  protected?: boolean
 }
 
 /**
@@ -101,4 +106,5 @@ export interface FullCanvasFreeFolderData {
   id: string
   backgroundColor: string
   data: FreeFolderItem[]
+  protected?: boolean
 }

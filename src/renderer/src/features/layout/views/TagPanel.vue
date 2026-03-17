@@ -1,10 +1,13 @@
+// src/renderer/src/features/layout/views/TagPanel.vue
 <script setup lang="ts">
-import { computed, defineAsyncComponent, type Component } from 'vue'
-import type { TagLeafData } from './PageLayout'
+import { computed, defineAsyncComponent, toRefs, type Component } from 'vue'
+import type { TagLeafData } from '../models/PageLayout'
+import { dispatch } from '../stores/useLayout'
 
 const props = withDefaults(
   defineProps<{
     leafData: TagLeafData
+    folderId: string
     closable?: boolean
     width?: number | string
     height?: number | string
@@ -16,33 +19,27 @@ const props = withDefaults(
   }
 )
 
-const emit = defineEmits<{
-  (event: 'close'): void
-  (e: 'update:activeTabName', tabName: string): void
-}>()
+const { leafData } = toRefs(props)
 
 const tabSize = computed(() => ({
   width: typeof props.width === 'number' ? `${props.width}px` : props.width,
   height: typeof props.height === 'number' ? `${props.height}px` : props.height
 }))
 
-const isSingleton = computed(() => props.leafData.type === 'singleton')
+const isSingleton = computed(() => leafData.value.type === 'singleton')
 
-// 1. 批量映射 tabs 文件夹下所有的组件
-const tabModules = import.meta.glob('../views/tabs/*/index.vue')
+const tabModules = import.meta.glob('../../../views/tabs/*/index.vue', { eager: false })
 
-// 2. 查找当前高亮的 Tag 对象
 const activeTag = computed(() => {
   return (
-    props.leafData.data.find((t) => t.tabName === props.leafData.activeTabName) ||
-    props.leafData.data[0]
+    leafData.value.data.find((t) => t.tabName === leafData.value.activeTabName) ||
+    leafData.value.data[0]
   )
 })
 
-// 3. 动态计算要渲染的组件
 const currentComponent = computed((): Component | null => {
   if (!activeTag.value) return null
-  const path = `../views/tabs/${activeTag.value.tabName}/index.vue`
+  const path = `../../../views/tabs/${activeTag.value.tabName}/index.vue`
   if (tabModules[path]) {
     return defineAsyncComponent(tabModules[path] as () => Promise<Component>)
   }
@@ -50,7 +47,7 @@ const currentComponent = computed((): Component | null => {
 })
 
 const layoutClass = computed(() => {
-  const pos = props.leafData.tabHeaderPosition || 'top'
+  const pos = leafData.value.tabHeaderPosition || 'top'
   const classes = [`tab--pos-${pos}`]
   if (isSingleton.value) {
     classes.push('tab--singleton')
@@ -58,9 +55,12 @@ const layoutClass = computed(() => {
   return classes
 })
 
-// 5. 切换标签页
 const switchTab = (tabName: string): void => {
-  emit('update:activeTabName', tabName)
+  dispatch({ type: 'SET_ACTIVE_TAB', id: leafData.value.id, tabName })
+}
+
+const handleClose = (): void => {
+  dispatch({ type: 'CLOSE_FOLDER', id: props.folderId })
 }
 </script>
 
@@ -79,7 +79,7 @@ const switchTab = (tabName: string): void => {
           {{ tag.title }}
         </div>
       </div>
-      <button v-if="props.closable" class="tab__close" type="button" @click="emit('close')">
+      <button v-if="props.closable" class="tab__close" type="button" @click="handleClose">
         <svg class="tab__close-icon" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M6.5 6.5L17.5 17.5M17.5 6.5L6.5 17.5" />
         </svg>
@@ -118,8 +118,8 @@ const switchTab = (tabName: string): void => {
   border: clamp(0.5px, var(--m-val) * 1000px, 1px) solid var(--tab-border-color);
 
   /* 覆盖行内宽高的限制，让 flex 自己去计算尺寸 */
-  width: auto !important;
-  height: auto !important;
+  width: 100% !important;
+  height: 100% !important;
   flex: 1;
 }
 
