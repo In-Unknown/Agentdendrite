@@ -1,3 +1,4 @@
+/* src/renderer/src/assets/skins/scrollbar.css */
 :root {
   --scrollbar-track-color: var(--color-bg-300);
   --scrollbar-thumb-color: var(--palette-gray-500);
