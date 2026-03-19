@@ -1,8 +1,7 @@
-// src\renderer\src\features\layout\stores\useLayout.ts
-
+// src/renderer/src/features/layout/stores/useLayout.ts
 import { reactive } from 'vue'
 import type { CanvasTagFolderData } from '../models/PageLayout'
-import { applyAction, LayoutAction } from '../logic/layoutEngine'
+import { LayoutAction, dispatchAction } from '../logic/layoutActions'
 
 const toRatio = (val: number): CanvasTagFolderData['ratio'] => val as CanvasTagFolderData['ratio']
 
@@ -325,13 +324,5 @@ export const topLayoutData = reactive<CanvasTagFolderData>({
 const layers = [topLayoutData, layoutData]
 
 export const dispatch = (action: LayoutAction): void => {
-  console.log('收到指令:', action.type, action)
-
-  for (const layer of layers) {
-    const handled = applyAction(layer.data, action)
-    if (handled) {
-      console.log(`指令由层 ${layer.id} 处理成功`)
-      return
-    }
-  }
+  dispatchAction(layers, action)
 }

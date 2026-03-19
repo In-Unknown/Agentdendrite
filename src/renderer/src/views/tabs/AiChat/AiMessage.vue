@@ -1,3 +1,4 @@
+<!-- src/renderer/src/views/tabs/AiChat/AiMessage.vue -->
 <template>
   <div class="ai-message">
     <div class="ai-header">
