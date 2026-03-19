@@ -1,3 +1,4 @@
+<!-- src/renderer/src/views/tabs/AiChat/MessageList.vue -->
 <template>
   <div class="message-container">
     <div ref="listRef" class="message-list scrollbar--rail">

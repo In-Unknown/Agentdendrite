@@ -1,0 +1,5568 @@
+﻿
+
+========== $(File) ==========
+
+
+// c:\D\01-Projects\Agentdendrite\server\AgentdendriteServer\Controllers\ChatFeature\LlmController.cs
+using AgentdendriteServer.Utils;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
+using System.Diagnostics;
+using System.Text;
+using System.Text.Json;
+using static System.Runtime.InteropServices.JavaScript.JSType;
+using IoFile = System.IO.File;
+
+namespace AgentdendriteServer.Controllers.ChatFeature;
+
+[Route("api/[controller]")]
+[ApiController]
+public class LlmController(LlmService chatService, JsonlStore jsonlStore) : ControllerBase
+{
+
+  [HttpPost("stream")]
+  public async Task GetUniversalAiStream([FromBody] List<BasisMessage> msg, CancellationToken stopSign)
+  {
+
+    bool isHeaderWritten = false;      // 是否已写入 JSON 对象开头
+    bool isReasoningFinished = false;  // 是否已从思考切换到正文
+    string[] savePath = [ "Data", "ChatFeature", "chatData.jsonl" ];
+    void AppendStreamChunk(BasisMessage chunk, bool isFinished)
+    {
+      // 尝试转换为 AssistantMessage
+      AssistantMessage? assistantChunk = chunk as AssistantMessage;
+
+      const string part1 = "{\"role\":\"assistant\",\"reasoning_content\":\"";
+      const string part2 = "\",\"content\": \"";
+      const string part3 = "\"}\n";
+
+      // 核心逻辑拆分：
+      // A. 如果是在传输中且转换失败（例如收到了非助手消息块），则跳过处理
+      if (!isFinished && assistantChunk == null) return;
+
+      // B. 如果有数据块，处理内容写入
+      if (assistantChunk != null)
+      {
+        // 使用序列化工具处理转义字符
+        // 安全提取 JSON 字符串内容的本地函数
+        string GetSafeJsonInnerString(string? rawText)
+        {
+          if (string.IsNullOrEmpty(rawText)) return "";
+          string jsonStr = rawText.ToJson();
+          // ToJson 保证至少返回 '""' (长度为2)。安全截取掉头尾的1个双引号，保留内部完整的转义结构
+          if (jsonStr.Length >= 2 && jsonStr.StartsWith('\"') && jsonStr.EndsWith('\"'))
+          {
+            return jsonStr[1..^1];
+          }
+          return jsonStr;
+        }
+
+        string reasoningText = GetSafeJsonInnerString(assistantChunk.ReasoningContent);
+        string contentText = GetSafeJsonInnerString(assistantChunk.Content);
+
+
+
+        // 分支一：处理思考内容 (Reasoning)
+        if (!string.IsNullOrEmpty(reasoningText))
+        {
+          if (!isHeaderWritten)
+          {
+            jsonlStore.JsonStringSave(savePath, part1 + reasoningText, false);
+            isHeaderWritten = true;
+          }
+          else
+          {
+            jsonlStore.JsonStringSave(savePath, reasoningText, false);
+          }
+        }
+
+        // 分支二：处理正文内容 (Content)
+        if (string.IsNullOrEmpty(reasoningText) && !string.IsNullOrEmpty(contentText))
+        {
+          if (!isHeaderWritten)
+          {
+            jsonlStore.JsonStringSave(savePath, part1 + part2 + contentText, false);
+            isHeaderWritten = true;
+            isReasoningFinished = true;
+          }
+          else if (!isReasoningFinished)
+          {
+            jsonlStore.JsonStringSave(savePath, part2 + contentText, false);
+            isReasoningFinished = true;
+          }
+          else
+          {
+            jsonlStore.JsonStringSave(savePath, contentText, false);
+          }
+        }
+      }
+
+      // C. 分支三：结束处理（独立判断）
+      if (isFinished)
+      {
+
+        // 如果只有思考开头而没有正文，必须闭合 JSON 结构中的 content 字段
+        if (isHeaderWritten && !isReasoningFinished)
+        {
+          jsonlStore.JsonStringSave(savePath, part2, false);
+        }
+
+        // 只有在已经写入过开头的情况下，才写入结束符（防止空流产生无效 JSON）
+        if (isHeaderWritten)
+        {
+          jsonlStore.JsonStringSave(savePath, part3, true);
+        }
+      }
+    }
+
+    
+
+    Response.ContentType = "text/plain; charset=utf-8";
+
+    List<BasisMessage> history = await jsonlStore.JsonLineReadAsync<BasisMessage>("Data", "ChatFeature", "chatData.jsonl");
+    jsonlStore.JsonLineSave<BasisMessage>(msg, "Data", "ChatFeature", "chatData.jsonl");
+
+    msg.InsertRange(0, history);
+
+    try
+    {
+      var ff = Stopwatch.StartNew();
+      await foreach (BasisMessage messageChunk in chatService.GetAiStreamAsync(msg, stopSign))
+      {
+        ff.Stop();
+        long ms = ff.ElapsedMilliseconds;
+        if (ms < 20) {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.Write($"{ms}ms "); // 快的并排写
+        }
+        else if (ms < 100) {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"\n[Timer] 网络返回中等耗时: {ms}ms");
+        }
+        else {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"\n[Timer] 网络返回严重延迟: {ms}ms <<<<");
+        }
+        await Response.WriteAsync(messageChunk.Serialize() + "\n", stopSign);
+        await Response.Body.FlushAsync(stopSign);
+
+        AppendStreamChunk(messageChunk, false);
+        ff = Stopwatch.StartNew();
+      }
+      ff.Stop();
+      AppendStreamChunk(new AssistantMessage(), true);
+    }
+    catch (OperationCanceledException)
+    {
+    }
+    catch (Exception ex)
+    {
+      await Response.WriteAsync($"[System Error]: {ex.Message}", stopSign);
+    }
+  }
+
+  [HttpPost("full")]
+  public async Task<ActionResult<BasisMessage>> GetFullResponse([FromBody] List<BasisMessage> msg, CancellationToken stopSign)
+  {
+    try
+    {
+      List<BasisMessage> history = await jsonlStore.JsonLineReadAsync<BasisMessage>("Data", "ChatFeature", "chatData.jsonl");
+
+      // 保存
+      jsonlStore.JsonLineSave<BasisMessage>(msg, "Data", "ChatFeature", "chatData.jsonl");
+
+      msg.InsertRange(0, history);
+      AssistantMessage result = await chatService.GetAiFullResponseAsync(msg, stopSign);
+
+      // 保存
+      jsonlStore.JsonLineSave<BasisMessage>([result], "Data", "ChatFeature", "chatData.jsonl");
+
+      return result;
+    }
+    catch (Exception ex)
+    {
+      return StatusCode(500, $"[System Error]: {ex.Message}");
+    }
+  }
+
+  [HttpGet("clone")]
+  public async Task<ActionResult<List<BasisMessage>>> ActionResult([FromQuery] string id = "chatData.jsonl")
+  {
+    return await jsonlStore.JsonLineReadAsync<BasisMessage>("Data", "ChatFeature", id);
+  }
+}
+
+
+========== $(File) ==========
+
+
+// c:\D\01-Projects\Agentdendrite\server\AgentdendriteServer\Controllers\ChatFeature\LlmModels.cs
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.Encodings.Web;
+
+namespace AgentdendriteServer.Controllers.ChatFeature;
+
+/// <summary>
+/// 聊天参与者的角色定义。
+/// 严格对应 OpenAI 协议中的 role 字段取值。
+/// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum MessageRole
+{
+  /// <summary> 用户（提问者） </summary>
+  user,
+
+  /// <summary> 助手（AI 模型） </summary>
+  assistant,
+
+  /// <summary> 系统提示词（用于设定模型行为） </summary>
+  system
+}
+
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "role")]
+[JsonDerivedType(typeof(UserMessage), "user")]
+[JsonDerivedType(typeof(AssistantMessage), "assistant")]
+[JsonDerivedType(typeof(SystemMessage), "system")]
+public class BasisMessage
+{
+  [JsonPropertyOrder(-3)]
+  [JsonIgnore]
+  public MessageRole Role { get; set; }
+
+  /// <summary>
+  /// 将当前片段序列化为 JSON 字符串。
+  /// 常用于在 SSE (Server-Sent Events) 流中向前端写入数据行。
+  /// </summary>
+  /// <returns>符合小驼峰命名规范的 JSON 字符串</returns>
+  public string Serialize()
+  {
+    return JsonConvert.ToJson<BasisMessage>(this);
+  }
+}
+
+public class AssistantMessage : BasisMessage
+{
+  [JsonPropertyOrder(-2)]
+  [JsonPropertyName("reasoning_content")]
+  [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+  public string? ReasoningContent { get; set; } // 思考内容
+
+  [JsonPropertyOrder(-1)]
+  [JsonPropertyName("content")]
+  [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+  public string? Content { get; set; }
+
+  public AssistantMessage(string? content = null, string? reasoningContent = null)
+  {
+    Content = content;
+    ReasoningContent = reasoningContent;
+    Role = MessageRole.assistant;
+  }
+}
+
+public class UserMessage : BasisMessage
+{
+  [JsonPropertyName("content")]
+  public string Content { get; set; }
+
+  public UserMessage(string content = "")
+  {
+    Content = content;
+    Role = MessageRole.user; // 在构造函数中设置角色
+  }
+}
+
+public class SystemMessage : BasisMessage
+{
+  [JsonPropertyName("content")]
+  public string Content { get; set; }
+
+  public SystemMessage(string content = "")
+  {
+    Content = content;
+    Role = MessageRole.system; // 在构造函数中设置角色
+  }
+}
+
+
+========== $(File) ==========
+
+
+// c:\D\01-Projects\Agentdendrite\server\AgentdendriteServer\Controllers\ChatFeature\LlmService.cs
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Text.Json;
+
+namespace AgentdendriteServer.Controllers.ChatFeature;
+
+/// <summary>
+/// LLM (大语言模型) 通讯服务类。
+/// 封装了基于 OpenAI 兼容协议（如 DeepSeek, GPT-4 等）的调用逻辑。
+/// 支持推理过程（Thinking Process）的流式解析和结果聚合。
+/// </summary>
+public class LlmService(IConfiguration config, HttpClient httpClient)
+{
+  public async IAsyncEnumerable<AssistantMessage> GetAiStreamAsync(IEnumerable<BasisMessage> messages, [EnumeratorCancellation] CancellationToken ct)
+  {
+    // 1. 获取基础配置
+    // 从 appsettings.json 或环境变量中读取模型连接信息
+    string baseUrl = config["LLM:BaseUrl"] ?? throw new Exception("配置错误：缺失 LLM:BaseUrl");
+    string apiKey = config["LLM:ApiKey"] ?? throw new Exception("配置错误：缺失 LLM:ApiKey");
+    string modelName = config["LLM:ModelName"] ?? throw new Exception("配置错误：缺失 LLM:ModelName");
+
+    // 2. 构造请求 Payload
+    // 包含模型名称、上下文消息、开启流式传输，并启用思考过程（针对支持 DeepSeek 等模型的推理功能）
+    var payload = new
+    {
+      model = modelName,
+      messages,
+      stream = true,
+      thinking = new { type = "enabled" } // 兼容支持推理功能的 API 扩展
+    };
+    var request = new HttpRequestMessage(HttpMethod.Post, baseUrl);
+    request.Headers.Add("Authorization", $"Bearer {apiKey}");
+    request.Content = new StringContent(
+        JsonConvert.ToJson(payload), 
+        Encoding.UTF8,
+        "application/json"
+    );
+
+    // 3. 发送网络请求
+    // 使用 ResponseHeadersRead 确保我们能在响应体还没完全下载完时就开始处理流
+    using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+
+    // 处理 HTTP 错误状态码-里是有错的代码
+    if (!response.IsSuccessStatusCode)
+    {
+      string errorDetail = await response.Content.ReadAsStringAsync(ct);
+      yield return new AssistantMessage($"[API Error] ({response.StatusCode}): {errorDetail}");
+      yield break;
+    }
+
+    // 4. 流式解析 SSE (Server-Sent Events)
+    using Stream stream = await response.Content.ReadAsStreamAsync(ct);
+    using StreamReader reader = new(stream);
+
+    while (!reader.EndOfStream)
+    {
+      string? line = await reader.ReadLineAsync(ct);
+
+      // 过滤空行或非 data 协议行
+      if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data:")) continue;
+
+      // 获取 data: 之后的内容
+      string data = line[5..].Trim();
+
+      // 检查流是否结束
+      if (data == "[DONE]") yield break;
+
+      string? thinking = null;
+      string? answer = null;
+
+      try
+      {
+        using JsonDocument doc = JsonDocument.Parse(data);
+        // 按照 OpenAI 标准格式解析 choices[0].delta
+        JsonElement delta = doc.RootElement.GetProperty("choices")[0].GetProperty("delta");
+
+        // 处理推理内容 (Thinking/Reasoning)
+        // 某些模型使用 reasoning_content 字段返回思考过程
+        if (delta.TryGetProperty("reasoning_content", out var reasoning) && reasoning.ValueKind != JsonValueKind.Null)
+        {
+          thinking = reasoning.GetString() ?? "";
+        }
+
+        // 处理正式文本内容 (Content)
+        if (delta.TryGetProperty("content", out var content) && content.ValueKind != JsonValueKind.Null)
+        {
+          answer = content.GetString() ?? "";
+        }
+      }
+      catch
+      {
+        // 解析失败（可能是非标准 JSON 片段），跳过该行继续处理
+        continue;
+      }
+
+
+      // 组装最后返回的内容
+      yield return new AssistantMessage(answer, thinking);
+    }
+  }
+
+  public async Task<AssistantMessage> GetAiFullResponseAsync(IEnumerable<BasisMessage> messages, CancellationToken ct)
+  {
+    var reasoningBuilder = new StringBuilder();
+    var contentBuilder = new StringBuilder();
+
+    // 异步迭代流式输出，将片段拼接到 StringBuilder 中
+    await foreach (var message in GetAiStreamAsync(messages, ct))
+    {
+      if (!string.IsNullOrEmpty(message.Content))
+      {
+        contentBuilder.Append(message.Content);
+      }
+      else if (!string.IsNullOrEmpty(message.ReasoningContent))
+      {
+        reasoningBuilder.Append(message.ReasoningContent);
+      }
+    }
+    
+    // 4. 将拼接好的字符串转回 string，如果没有内容则转为 null
+    string? finalContent = contentBuilder.Length > 0 ? contentBuilder.ToString() : null;
+    string? finalReasoning = reasoningBuilder.Length > 0 ? reasoningBuilder.ToString() : null;
+
+    // 5. 返回合并后的新对象
+    return new AssistantMessage(finalContent, finalReasoning);
+  }
+}
+
+
+========== $(File) ==========
+
+
+// c:\D\01-Projects\Agentdendrite\server\AgentdendriteServer\Utils\JsonConvert.cs
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace AgentdendriteServer.Utils;
+
+public static class JsonConvert
+{
+  // 静态配置实例：高性能且全局统一
+  public static readonly JsonSerializerOptions Options = new()
+  {
+    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    PropertyNameCaseInsensitive = true // 反序列化时忽略大小写，更稳健
+  };
+
+  // 快捷序列化：对象 -> 字符串
+  public static string ToJson<T>(this T obj) =>
+      JsonSerializer.Serialize(obj, Options);
+
+  // 快捷反序列化：字符串 -> 对象
+  public static T? FromJson<T>(this string json) =>
+      string.IsNullOrWhiteSpace(json) ? default : JsonSerializer.Deserialize<T>(json, Options);
+}
+
+
+========== $(File) ==========
+
+
+// c:\D\01-Projects\Agentdendrite\server\AgentdendriteServer\Utils\JsonlStore.cs
+using System.Diagnostics;
+using System.Text;
+using System.Text.Json;
+
+namespace AgentdendriteServer.Utils;
+
+public class JsonlStore
+{
+  // 用于流式写入的共享写入器（注意：此服务为 Scoped，每个请求独立，故安全）
+  private StreamWriter? _currentWriter;
+
+  public async Task<List<T>> JsonLineReadAsync<T>(params string[] pathParts)
+  {
+    string fullPath = Path.Combine([AppDomain.CurrentDomain.BaseDirectory, .. pathParts]);
+    var result = new List<T>();
+
+    if (!File.Exists(fullPath))
+      return result;
+
+    using var reader = new StreamReader(fullPath);
+    string? line;
+    while ((line = await reader.ReadLineAsync()) != null)
+    {
+      if (string.IsNullOrWhiteSpace(line)) continue;
+      try
+      {
+        T? item = JsonSerializer.Deserialize<T>(line, JsonConvert.Options);
+        if (item != null) result.Add(item);
+      }
+      catch (JsonException ex)
+      {
+        Debug.WriteLine($"[JsonlStore.JsonLineReadAsync] 解析文件 JSON 行时出错: {ex.Message}");
+        continue;
+      }
+    }
+    return result;
+  }
+
+  public void JsonLineSave<T>(IEnumerable<T> items, params string[] pathParts)
+  {
+    if (items == null || !items.Any()) return;
+
+    string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+    string fullPath = Path.Combine([baseDir, .. pathParts]);
+
+    Debug.WriteLine($"JsonLineSave: Full path = {fullPath}");
+
+    string? directory = Path.GetDirectoryName(fullPath);
+    if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+    {
+      Directory.CreateDirectory(directory);
+      Debug.WriteLine($"JsonLineSave: Created directory: {directory}");
+    }
+
+    try
+    {
+      int count = 0;
+      using var writer = new StreamWriter(fullPath, append: true, Encoding.UTF8);
+      foreach (T item in items)
+      {
+        writer.WriteLine(JsonConvert.ToJson(item));
+        count++;
+      }
+      Debug.WriteLine($"JsonLineSave: Successfully wrote {count} lines to {fullPath}");
+    }
+    catch (Exception ex)
+    {
+      Debug.WriteLine($"JsonlStore.JsonLineSave: ERROR - {ex.Message}");
+      Debug.WriteLine(ex.StackTrace);
+      throw;
+    }
+  }
+
+  /// <summary>
+  /// 将原始字符串内容追加写入到指定文件（用于流式逐块写入）。
+  /// </summary>
+  public void JsonStringSave(string[] pathParts, string content, bool closeFile = false)
+  {
+    if (pathParts == null || pathParts.Length == 0) return;
+
+    // 1. 拼接完整路径
+    string fullPath = Path.Combine([AppDomain.CurrentDomain.BaseDirectory, .. pathParts]);
+
+    // 2. 获取当前正在写入的文件路径（如果流是打开的）
+    string? currentOpenPath = (_currentWriter?.BaseStream as FileStream)?.Name;
+
+    // 3. 判断是否需要重新创建 StreamWriter
+    // 条件：当前没有打开的流，或者要写入的路径和正在打开的路径不一致
+    if (_currentWriter == null || !string.Equals(currentOpenPath, fullPath, StringComparison.OrdinalIgnoreCase))
+    {
+      // 关掉旧的（如果有）
+      _currentWriter?.Dispose();
+
+      // 确保目录存在，防止异常报错
+      string? dir = Path.GetDirectoryName(fullPath);
+      if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+      {
+        Directory.CreateDirectory(dir);
+      }
+
+      // 打开新的流
+      _currentWriter = new StreamWriter(fullPath, append: true, Encoding.UTF8);
+      Debug.WriteLine($"JsonLineSave(stream): Opened new writer for {fullPath}");
+    }
+
+    // 4. 写入内容
+    _currentWriter.Write(content);
+    _currentWriter.Flush();
+
+    // 5. 如果要求关闭文件，则释放资源并置空
+    if (closeFile)
+    {
+      _currentWriter.Dispose();
+      _currentWriter = null;
+      Debug.WriteLine("JsonLineSave(stream): Closed file.");
+    }
+  }
+}
+
+
+========== $(File) ==========
+
+
+// c:\D\01-Projects\Agentdendrite\server\AgentdendriteServer\Program.cs
+global using AgentdendriteServer.Utils;
+
+using AgentdendriteServer.Controllers.ChatFeature;
+
+var builder = WebApplication.CreateBuilder(args);
+
+
+// ===================== 注册处 =========================
+builder.Services.AddHttpClient<LlmService>();
+builder.Services.AddControllers();
+builder.Services.AddScoped<JsonlStore>();
+
+
+
+string[] allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
+
+builder.Services.AddCors(options =>
+{
+  options.AddPolicy("Cors", policy =>
+  {
+    policy.AllowAnyMethod().AllowAnyHeader();
+    if (allowedOrigins.Length == 0)
+    {
+      // 未配置来源时默认开放（开发场景）
+      policy.SetIsOriginAllowed(_ => true);
+    }
+    else
+    {
+      // 配置了来源则只允许这些来源（生产场景）
+      policy.WithOrigins(allowedOrigins);
+    }
+  });
+});
+// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
+builder.Services.AddOpenApi();
+
+WebApplication app = builder.Build();
+
+// Configure the HTTP request pipeline.
+if (app.Environment.IsDevelopment())
+{
+  app.MapOpenApi();
+}
+
+app.UseCors("Cors");
+
+app.UseHttpsRedirection();
+
+app.UseAuthorization();
+
+app.MapControllers();
+
+app.Run();
+
+
+========== $(File) ==========
+
+
+c:\D\01-Projects\Agentdendrite\README.md
+# Agentdendrite
+
+> 个人 AI Agent 可视化工作流与操作系统
+
+一款基于 **Electron + Vue 3 + C# ASP.NET Core** 构建的本地化 AI 智能体运行环境与工作流编排引擎。
+
+## 🎯 项目定位
+
+Agentdendrite 不是一个简单的聊天工具，而是一个**高度自由的本地化 AI 执行环境与工作流编排平台**。系统提供基础的"物理规律"——UI交互、节点编排、数据持久化、标准化的工具调用接口，所有的Agent行为、系统提示词和业务工作流均由用户（或具备工具调用能力的AI）自由探索和定义。
+
+### 核心价值
+
+- **提供画布，而非成品**：不预设特定业务逻辑，让用户自由创建和定义工作流
+- **不会被模型升级淘汰**：无论大模型如何进化，它们要操作本地电脑、执行复杂任务，永远需要一个"落地执行层"
+- **工作流即本地文件**：基于"工作流即本地文件"的设计，赋予AI基础的读写权限后，AI便能直接读取、解析甚至创建新的工作流
+- **涌现的自我构建能力**：系统不存在专门用于"生成工作流的复杂代码"，"AI自己搭建工作流"仅仅是AI调用文件读写工具的自然结果
+
+## 💡 核心哲学与愿景
+
+**"提供画布，而非成品。"**
+
+Agentdendrite 并不是一个预设好特定业务逻辑的垂直 AI 工具，而是一个**高度自由、可视化的本地 AI 执行底座**。系统仅提供最基础的"物理规律"——图形界面交互、节点编排能力、数据本地持久化、标准化的工具调用接口。所有的 Agent 行为、系统提示词和业务工作流，均交由用户（或具备工具调用能力的 AI）去自由探索和定义。
+
+### 三大核心特性
+
+- **拥抱模型进化，做坚实的基础设施**：无论云端的大模型如何迭代，它们要操作本地电脑环境、执行复杂多步网络请求或读写本地文件，永远需要一个"落地执行层"。本项目正是为此而生。
+- **让工作流执行白盒化**：彻底抛弃隐式的 Prompt 路由和晦涩的终端脚本，提供比拟 VS Code 的专业图形界面，让大任务拆解、节点流转、状态与中间日志清晰可见。
+- **"涌现"的自我构建能力**：基于"工作流即本地文件"的设计，赋予 AI 基础的读写权限后，AI 便能直接读取、解析甚至凭空创建新的工作流，实现能力上的自我扩展。
+
+---
+
+## ✨ 核心特性
+
+项目已完成核心应用骨架和布局系统，具备以下成熟功能：
+
+### 🛠️ 高级布局引擎 (Docking Layout System)
+- **双模式布局系统**：
+  - **网格标签组系统 (TagFolder)**：基于比例 (ratio) 的网格布局，支持水平和垂直方向分割
+  - **自由标签组系统 (FreeFolder)**：基于坐标和尺寸的自由浮动布局，支持拖拽和层级管理
+- **多层级任意嵌套**：支持无限层级的 `Canvas` 容器和 `Shell` 容器嵌套，实现复杂的 IDE 级布局
+- **智能标签管理**：
+  - 标签头位置可配置（top/bottom/left/right/none）
+  - 支持标签激活切换和动态关闭
+  - 三种叶子类型：normal（正常标签组）、placeholder（占位符）、singleton（单例组件）
+- **多层架构支持**：支持多层布局叠加（如 topLayoutData、layoutData），实现复杂的界面层次结构
+- **布局引擎核心**：内置布局操作引擎 (layoutEngine.ts)，支持文件夹关闭、标签切换等操作
+
+### 💬 企业级 AI 聊天底座
+- **极速流式对话**：基于服务端推送事件（SSE）的无缝流式输出机制，实时响应用户输入
+- **深度思考模式 (Reasoning)**：原生兼容 DeepSeek 等带有推理过程（Think Process）的模型，支持独立的思考面板渲染与折叠
+- **开发者友好的文本渲染**：
+  - 工业级 Markdown 解析，内嵌基于 `shiki` 的精确代码高亮引擎
+  - 代码块支持一键复制、语言识别和语法高亮
+  - 支持消息气泡、用户消息和 AI 消息的差异化展示
+- **完整的数据持久化**：基于 JSONL 格式的聊天记录存储，支持历史会话加载
+
+### 🧠 健壮的"管家与大脑"双轴架构
+
+### 架构设计理念
+
+Agentdendrite 采用**混合架构设计**，将系统职责清晰划分为"应用外壳"和"执行引擎"两大部分：
+
+- **Electron 外壳进程（管家）**：作为"管家"控制应用生命周期、多窗口管理及跨平台系统级事件
+- **C# 强类型数据核心（大脑）**：作为"大脑"，负责掌控数据真理、LLM 接口并发调度、消息路由与上下文管理
+- **前后端彻底解耦**：摒弃了传统 Node.js 承担过重业务逻辑的弊端，实现清晰的职责划分
+- **混合架构优势**：结合 Electron 的跨平台能力和 C# 的强类型优势，为后续 Agent 开发奠定坚实基础
+
+### 技术栈选择理由
+
+- **Electron**：成熟的桌面应用框架，负责窗口管理、软件生命周期、系统级事件监听
+- **Vue 3 + TypeScript**：现代化的前端技术栈，提供强大的响应式能力和类型安全
+- **C# ASP.NET Core**：强类型、高性能的后端框架，适合处理复杂业务逻辑、并发调度和多线程任务
+- **不随大流选择 JS/Python 而选择 C#**：在处理繁重的并发、本地进程拉起与多线程调度上，具有更天然的工程优势
+
+### 数据模型与所有权
+
+- **后端即真理**：后端才是真实数据的持有者
+- **前端即视图**：前端保留数据只是为了方便渲染画面
+- **同步机制**：前后端均持有数据副本，必须在特定时机保持同步
+  - 第一次加载页面时：从后端拉取真理数据填充前端
+  - 修改前端数据时：当 Vue 数据自动更新时，立即将更新推送到后端
+
+---
+
+## 🗺️ 演进路线图 (Roadmap)
+
+我们采取"骨架优先 -> 跑通闭环 -> 扩展生态"的渐进式构建策略：
+
+- [x] **Phase 1: 核心骨架搭建** —— 跑通 Electron 渲染进程与 C# 本地 API 通信，实现基础对话与流式渲染。
+- [x] **Phase 2: 专业级 UI 布局** —— 落地高定制化的 Docking 标签布局引擎，支持双模式布局（网格 + 自由浮动）和无限嵌套。
+- [ ] **Phase 3: 最小执行闭环** —— 引入可视化图节点库，打通 JSON 节点解析与单步执行逻辑。
+- [ ] **Phase 4: 本地工具集与 AI 赋能** —— 实现 `ReadFile` / `WriteFile` 等本地基础能力，跑通 LLM 的 Function Calling (Tool Use) 链路。
+- [ ] **Phase 5: 工作流与多智能体** —— 支持完整流程编排、多入口路由（接入外部 IM 服务）及多 Agent 协同。
+
+### 当前进度：Phase 2 已完成
+
+已成功实现高级布局引擎系统，包括：
+- 完整的布局类型定义（PageLayout.ts）
+- 布局操作引擎（layoutEngine.ts）
+- 状态管理（useLayout.ts）
+- 视图组件（TagFolder.vue、FreeFolder.vue、TagPanel.vue）
+- 双模式布局支持：网格标签组 + 自由标签组
+- 多层架构支持
+
+### MVP 30天冲刺计划
+
+基于项目核心定位，我们将锁定并打通最核心的物理链路：
+
+- **第1阶段：壳与骨架通信**
+  - 完成 Electron 外壳的搭建，实现对 C# 后端的正确拉起、端口分配与随动关闭
+  - 实现前端与后端的本地 API 通信连通
+
+- **第2阶段：核心运行时（最小执行闭环）**
+  - 定义并实现 1-3 个最基础的节点类型（如：文本输入节点、调用 LLM 节点、输出节点）
+  - 后端实现最简版的工作流解析器：能读取一段 JSON（代表图连线），按顺序将上一个节点的输出传给下一个节点，并打出日志
+
+- **第3阶段：基建工具与 AI 赋能（生命注入）**
+  - 实现两个不可或缺的内置工具：`ReadFile` 和 `WriteFile`
+  - 跑通大模型的 Function Calling / Tool Use 机制，使得在聊天框输入指令时，AI 能够准确理解并调用上述两个本地文件工具
+
+- **第4阶段：极简前端交互**
+  - 引入现成的前端节点图库（React Flow 等），实现"在界面上拖拽两个节点并连线 -> 保存为本地 JSON 文件"
+  - 提供一个基础的对话框界面，能与大模型对话，并展示其调用工具的中间状态
+
+---
+
+## 🚀 快速开始
+
+### 运行环境要求
+- [Node.js](https://nodejs.org/) (v18 或更高版本)
+- [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
+- npm、yarn 或 pnpm
+
+### 1. 启动本地执行大脑 (C# 后端)
+
+打开终端，进入服务端目录并启动：
+
+```bash
+cd server/AgentdendriteServer
+dotnet restore
+dotnet run
+```
+> 后端引擎将默认在 `http://localhost:5068` 监听请求。
+
+### 2. 启动应用主界面 (前端)
+
+保持后端运行，打开另一个终端窗口：
+
+```bash
+# 在项目根目录下，安装依赖
+npm install
+
+# 启动 Electron 开发环境
+npm run dev
+```
+
+### 3. 应用构建与打包
+
+```bash
+npm run typecheck   # TypeScript 类型校验
+npm run lint        # ESLint 代码规范检查
+
+# 生成各平台可执行文件
+npm run build:win   # 打包 Windows 应用 (.exe)
+npm run build:mac   # 打包 macOS 应用 (.dmg / .app)
+npm run build:linux # 打包 Linux 应用 (.AppImage / .deb)
+```
+
+---
+
+## 📂 项目结构概览
+
+为了实现高度的模块化和前后端责任划分，项目采用如下结构：
+
+```text
+Agentdendrite/
+├── src/                      # Electron 与前端界面
+│   ├── main/                 # Electron 主进程 (生命周期、窗口与安全策略)
+│   ├── renderer/             # Vue 3 渲染进程 (UI 层)
+│   │   └── src/
+│   │       ├── features/     # 功能模块
+│   │       │   └── layout/   # 布局引擎系统
+│   │       │       ├── logic/        # 布局逻辑引擎
+│   │       │       │   └── layoutEngine.ts
+│   │       │       ├── models/       # 布局数据模型
+│   │       │       │   └── PageLayout.ts
+│   │       │       ├── stores/       # 布局状态管理
+│   │       │       │   └── useLayout.ts
+│   │       │       └── views/        # 布局视图组件
+│   │       │       ├── FreeFolder.vue
+│   │       │       ├── TagFolder.vue
+│   │       │       └── TagPanel.vue
+│   │       ├── views/        # 视窗级功能面板
+│   │       │   └── tabs/     # 标签页组件
+│   │       │       └── AiChat/ # AI 聊天模块
+│   │       │       ├── MessageBlock/  # 消息块组件
+│   │       │       ├── Svg/           # SVG 图标
+│   │       │       ├── AiMessage.vue  # AI 消息组件
+│   │       │       ├── ChatInput.vue  # 聊天输入组件
+│   │       │       ├── MessageList.vue # 消息列表组件
+│   │       │       ├── UserMessage.vue # 用户消息组件
+│   │       │       └── index.vue
+│   │       ├── assets/       # 全局样式与主题
+│   │       │   └── skins/    # 自定义滚动条样式
+│   │       ├── App.vue       # 根组件
+│   │       └── main.ts       # 应用入口
+│   └── index.html            # 渲染进程 HTML 模板
+├── server/                   # .NET 9.0 业务核心大脑
+│   └── AgentdendriteServer/
+│       ├── Controllers/      # 控制器
+│       │   └── ChatFeature/ # 聊天功能模块
+│       │       ├── LlmController.cs      # LLM 控制器
+│       │       ├── LlmModels.cs          # LLM 数据模型
+│       │       └── LlmService.cs          # LLM 服务
+│       ├── Utils/            # 工具类
+│       │   ├── JsonlStore.cs            # JSONL 存储
+│       │   └── JsonConvert.cs           # JSON 转换工具
+│       ├── Data/             # 数据存储
+│       │   └── ChatFeature/  # 聊天数据
+│       │       └── chatData.jsonl       # 聊天记录
+│       └── Program.cs        # 应用入口
+├── build/                    # 应用打包资源
+│   ├── icon.ico              # Windows 图标
+│   ├── icon.icns             # macOS 图标
+│   └── icon.png              # 通用图标
+├── .docs/                    # 项目文档
+│   ├── plans/                # 实现计划
+│   └── reviews/              # 代码审查记录
+├── package.json              # Node.js 依赖配置
+├── todo.md                   # 开发任务列表
+├── 大框架.md                 # 混合架构设计文档
+└── README.md                 # 项目说明文档
+```
+
+## 🎯 技术实现亮点
+
+### 前端架构：高级布局引擎
+
+项目的布局引擎采用了创新的**双模式架构**，完美融合了传统 IDE 的稳定性和现代桌面应用的灵活性：
+
+#### 1. 核心数据模型
+
+- **类型安全**：完整的 TypeScript 类型定义系统，支持编译时类型检查
+- **品牌类型**：使用品牌类型（Branded Types）确保 ratio 字段在 0-1 范围内
+- **联合类型**：灵活的联合类型设计，支持多种容器和叶子节点的组合
+
+#### 2. 布局操作引擎
+
+布局引擎 (`layoutEngine.ts`) 提供了高效的状态管理机制：
+
+- **动作分发**：基于 Redux 模式的 action-dispatch 架构
+- **递归查找**：高效的递归算法在复杂的嵌套结构中查找和操作节点
+- **多层级支持**：支持多个布局层（如 topLayoutData、layoutData）的协同工作
+- **保护机制**：通过 `protected` 标记防止关键节点被误删除
+
+#### 3. 状态管理
+
+- **响应式数据**：使用 Vue 3 的 `reactive` API 实现布局状态的响应式更新
+- **中央化状态**：通过 `useLayout.ts` 实现布局状态的中央化管理
+- **类型推断**：完整的类型推断支持，减少运行时错误
+
+### 聊天系统架构
+
+#### 1. 前端组件化设计
+
+- **模块化组件**：聊天系统被拆分为多个独立的 Vue 组件
+- **关注点分离**：消息列表、输入框、消息块等各司其职
+- **可复用性**：SVG 图标组件可在整个应用中复用
+
+#### 2. 数据流处理
+
+- **流式响应**：基于 SSE 的流式数据处理，实现实时响应
+- **状态同步**：前后端数据同步机制，确保数据一致性
+- **持久化存储**：JSONL 格式的聊天记录存储，支持历史数据查询
+
+### 后端架构：C# Web API 开发蓝图
+
+#### 1. 数据存储策略：从文件到数据库的进化
+
+- **静态配置**：使用 `appsettings.json`，利用强类型绑定 `IOptions<T>`
+- **动态业务数据**：统一使用 **EF Core + 数据库**
+- **轻量化路径**：采用 **SQLite**，具备文件的便携性和 SQL 的查询能力
+
+#### 2. 业务组织架构：垂直切片模式
+
+- **不再按文件类型分层，而是按功能分块**
+- **目录结构规范**：
+  ```text
+  /Features
+      /Order
+          OrderController.cs  (入口：负责接待)
+          OrderService.cs     (逻辑：负责执行)
+          OrderDtos.cs        (模型：负责数据结构定义)
+  ```
+- **优势**：修改"订单"功能时，不需要在几个大文件夹之间跳跃
+
+#### 3. 跨业务调用与公共逻辑
+
+- **共享模型与逻辑的"公海" (Shared 层)**：被超过两个以上的业务模块使用的模型或工具逻辑
+- **服务间依赖注入 (Service-to-Service)**：在 `OrderService` 的构造函数中注入 `IUserService`
+- **领域层提取 (Domain Layer)**：将核心实体提取到项目根目录的 `Domain` 文件夹中
+
+#### 4. 依赖注入 (DI) 的必要性
+
+- **配置传参地狱**：底层类需要读取配置参数时，DI 允许直接"白嫖"系统配置
+- **DbContext 生命周期**：数据库连接必须在一次 HTTP 请求中共享同一个实例
+- **套娃自动化**：DI 自动帮你把整棵依赖树种好
+
+#### 5. 前端交互与约定
+
+- **路径约定**：遵循 `api/[controller]/[action]`
+- **Swagger 自动化**：强制开启 Swagger，代码变动文档即刻更新
+- **DTO 强约束**：
+  - 输入：使用 `xxxRequest` 类
+  - 输出：使用 `xxxResponse` 类
+  - 禁忌：绝对不要把数据库实体直接扔给前端
+
+### 混合架构优势
+
+- **前后端解耦**：Electron 负责界面，C# 负责业务逻辑，职责清晰
+- **类型安全**：C# 的强类型系统和 TypeScript 的类型检查双重保障
+- **性能优化**：C# 后端处理复杂业务逻辑，前端专注于 UI 渲染
+- **扩展性强**：模块化设计便于后续功能扩展和维护
+
+### 前端 API 调用架构
+
+当前项目采用**API 层结构**来管理前后端通信：
+
+- **统一 HTTP 请求封装**：创建 `src/api/http.js` 统一配置 axios
+- **按模块封装 API**：如 `src/api/userApi.js`，将 URL 封装成函数
+- **Vue 页面调用方式**：不再直接写 URL，而是调用 API 函数
+- **重构策略**：逐步迁移，新功能全部使用 API 层，旧代码保持不动
+
+### 相比同类项目的优势
+
+Agentdendrite 在设计之初就解决了同类开源项目的几个核心痛点：
+
+1. **从 CLI/YAML 到 可视化 GUI**：彻底抛弃了在终端运行、靠修改晦涩的 YAML 文件和 Markdown 来定义技能的原始方式
+2. **从隐式 Prompt 路由 到 显式节点编排**：复杂任务不再全靠 AI 的"盲猜"，用户可以通过工作流将一个大任务拆解，每一步该调用工具还是该进行逻辑运算，清晰可见
+3. **更健壮的后端底座**：使用 C# Web API 替代 Node.js，在处理繁重的并发、本地进程拉起与多线程调度上，具有更天然的工程优势
+4. **进化闭环**：因为"工作流即标准文本文件"的设计，赋予了系统极强的自扩展能力
+
+---
+
+## 📝 贡献与支持
+
+Agentdendrite 目前正处于活跃的开发期，欢迎任何形式的贡献！
+如果您发现了 Bug、有新的功能建议或希望参与开发，请随时提交 Issue 或 Pull Request。
+
+### 推荐的开发工具
+- [VS Code](https://code.visualstudio.com/) 配合 Volar 插件
+- [C# Dev Kit](https://marketplace.visualstudio.com/items?itemName=ms-dotnettools.csdevkit) 扩展
+
+## 📄 许可证 (License)
+
+本项目采用 [MIT License](LICENSE) 协议进行开源。
+
+
+========== $(File) ==========
+
+
+c:\D\01-Projects\Agentdendrite\TECH_DEBT.md
+# TODO: 重构前端 API 调用方式
+
+当前项目的前端直接在 Vue 组件中 **硬编码 URL** 来请求接口，例如：
+
+```js
+axios.get("http://xxx/api/some/path")
+```
+
+这种方式短期开发比较快，但随着项目增长会产生一些问题：
+
+* URL 分散在大量 Vue 文件中
+* 后端地址或路径变化时需要全局搜索修改
+* 请求逻辑（token、错误处理等）无法统一管理
+* 代码可读性下降
+* API 难以集中管理
+
+因此后续需要逐步重构为 **API 层结构**。
+
+---
+
+# 目标结构
+
+在 `src` 下新增 `api` 目录：
+
+```
+src
+ ├ api
+ │   ├ http.js
+ │   ├ userApi.js
+ │   ├ otherApi.js
+ │
+ ├ views
+ ├ components
+```
+
+---
+
+# 1 统一 HTTP 请求封装
+
+创建：
+
+```
+src/api/http.js
+```
+
+示例：
+
+```js
+import axios from "axios"
+
+const http = axios.create({
+  baseURL: "http://backend-url/api",
+  timeout: 10000
+})
+
+export default http
+```
+
+以后所有接口请求都通过这个实例发送。
+
+---
+
+# 2 按模块封装 API
+
+例如：
+
+```
+src/api/userApi.js
+```
+
+示例：
+
+```js
+import http from "./http"
+
+export function getUsers() {
+  return http.get("/users")
+}
+
+export function getUser(id) {
+  return http.get(`/users/${id}`)
+}
+
+export function createUser(data) {
+  return http.post("/users", data)
+}
+```
+
+本质就是：
+
+**把 URL 封装成函数。**
+
+---
+
+# 3 Vue 页面调用方式
+
+Vue 不再直接写 URL，而是调用 API 函数：
+
+```js
+import { getUsers } from "@/api/userApi"
+
+async mounted() {
+  const users = await getUsers()
+  this.users = users.data
+}
+```
+
+调用链：
+
+```
+Vue组件
+ ↓
+API函数
+ ↓
+HTTP请求
+ ↓
+URL
+```
+
+---
+
+# 4 重构策略
+
+不需要一次性重构整个项目，可以 **逐步迁移**：
+
+1. 新功能全部使用 API 层
+2. 旧代码保持不动
+3. 有时间再逐步替换旧 URL
+
+---
+
+# 5 当前优先级
+
+当前阶段仍然优先开发功能，例如：
+
+* 拖动标签组
+* 分区功能
+* UI 交互完善
+
+API 层重构可以作为 **中期代码整理任务**，不阻塞当前功能开发。
+
+---
+
+# 备注
+
+核心原则：
+
+**Vue 页面不直接写 URL，统一通过 API 层调用接口。**
+
+
+========== $(File) ==========
+
+
+c:\D\01-Projects\Agentdendrite\后端框架.md
+# C# Web API 项目开发架构蓝图与深度决策指南
+
+## 核心哲学：后端的三段式本质
+本项目架构基于对后端本质的深度拆解，即 **IPO 模型 (Input - Process - Output)**：
+1. **获取数据（Input）**：解决“数据从哪来、怎么存、如何保证安全与性能”的问题。
+2. **处理逻辑（Process）**：解决“业务代码写在哪、怎么组织目录、如何处理交叉依赖”的问题。
+3. **返回数据（Output）**：解决“前后端契约、API 清晰度、数据格式化”的问题。
+
+---
+
+## 第一部分：数据存储策略——从文件到数据库的进化
+
+### 1.1 原始疑问与纠结
+*   **JSON 存数据的诱惑与恐惧**：JSON 方便、直接，适合简易处理。但痛点在于：
+    *   **目录结构失控**：如果文件多了，路径深度、文件名重复、维护起来极其麻烦。
+    *   **安全性与并发**：单个大文件容易损坏，且不支持高并发下的数据锁，数据定义模糊（分不清是配置还是业务数据）。
+*   **SQL 的顾虑**：EF Core 是否太重？如果只是存基础类型，是不是太复杂？
+
+### 1.2 最终决策方案
+*   **一刀切定义**：
+    1.  **静态配置**：交给 `appsettings.json`。使用强类型绑定 `IOptions<T>`，彻底解决“找文件”的问题。
+    2.  **动态业务数据**：统一使用 **EF Core + 数据库**。
+*   **轻量化路径**：为了避免安装庞大的 SQL Server，项目初期采用 **SQLite**。
+    *   **为什么？** 它将所有数据存在一个 `.db` 文件中，具备文件的便携性，同时具备 SQL 的查询能力、数据完整性和并发处理能力。它消除了“自己写工具代码去维护 JSON 目录”的低效工作。
+
+---
+
+## 第二部分：业务组织架构——垂直切片模式
+
+### 2.1 原始想法：文件夹内的一体化
+*   **构思**：一个业务对应一个文件夹。例如 `Order` 文件夹下直接放置 `OrderController`、`OrderService` 和 `OrderDto`。
+*   **心路历程**：这种做法打破了传统的“全项目 Controller 塞在一起”的陈旧观念。它的本质是**垂直切片架构 (Vertical Slice)**。
+
+### 2.2 确认的目录结构规范
+*   **不再按文件类型分层，而是按功能分块**：
+    ```text
+    /Features
+        /Order
+            OrderController.cs  (入口：负责接待)
+            OrderService.cs     (逻辑：负责执行)
+            OrderDtos.cs        (模型：负责数据结构定义)
+    ```
+*   **优势**：修改“订单”功能时，不需要在几个大文件夹之间跳跃，所有相关代码都在手边。
+
+---
+
+## 第三部分：跨业务调用与公共逻辑难题（核心架构难点）
+
+### 3.1 核心矛盾：当业务边界模糊时怎么办？
+在垂直切片架构中，最怕遇到：**一个业务逻辑（或模型）不直接属于某一个控制器，或者它被多个控制器共同调用。**
+
+### 3.2 深度拆解与应对方案
+我们讨论并确定了三种处理交叉调用的稳健方式：
+
+#### A. 共享模型与逻辑的“公海” (Shared 层)
+*   **场景**：如果某些模型（DTO）或工具逻辑（如文件处理）被超过两个以上的业务模块使用。
+*   **做法**：建立 `Features/Shared` 文件夹。
+*   **原则**：只有真正的“公用品”才放这里，防止它变成一个垃圾桶。
+
+#### B. 服务间依赖注入 (Service-to-Service)
+*   **场景**：`Order`（订单）业务在执行时，必须调用 `User`（用户）的逻辑（如检查用户等级）。
+*   **禁止项**：**严禁 Controller 之间互相调用**；严禁 Controller 直接调用非本模块的 Service（除非逻辑极其简单）。
+*   **正确路径**：
+    1.  在 `OrderService` 的构造函数中，通过 DI 注入 `IUserService`。
+    2.  `OrderController` 依然只找它的 `OrderService`。
+    3.  **心路历程**：这保证了 Controller 的纯净，它只管自己的“大业务”，底层的逻辑套娃由 Service 层去消化。
+
+#### C. 领域层提取 (Domain Layer)
+*   **场景**：当 `User` 实体、`Order` 实体等核心对象在全系统中无处不在时。
+*   **做法**：将这些核心实体（Entity）提取到项目根目录的 `Domain` 文件夹中。
+*   **结论**：垂直切片里存的是“业务专用 DTO”，而 `Domain` 里存的是“系统共有实体”。
+
+---
+
+## 第四部分：依赖注入 (DI) 的辩论——为什么不能 new？
+
+### 4.1 用户的质疑
+*   **观点**：在构造函数里直接 `new` 依赖的对象不是更直观吗？为什么要费劲去 `Program.cs` 注册并注入？
+
+### 4.2 最终的技术定论
+**必须坚持使用 DI，原因不是为了“高级”，而是为了解决以下实实在在的麻烦：**
+1.  **配置传参地狱**：底层类如果需要读取一个 `appsettings.json` 的参数，如果手动 `new`，你必须从最外层的 Controller 开始，把参数像接力棒一样一层层传下去。DI 允许底层类直接“白嫖”系统配置。
+2.  **DbContext 生命周期（生死存亡）**：数据库连接必须在一次 HTTP 请求中共享同一个实例。如果到处手动 `new`，会导致无法开启事务、数据库连接泄露、内存溢出。**DI 是这个连接的“管家”，它负责在请求结束时安全地销毁连接。**
+3.  **套娃自动化**：如果你要 `new A`，A 依赖 B，B 依赖 C。手动 `new` 需要你写三行代码。DI 只需要你写一行，它会自动帮你把整棵依赖树种好。
+
+---
+
+## 第五部分：前端交互与约定
+
+### 5.1 原始疑问
+*   API 路径怎么定？类型怎么给前端？
+
+### 5.2 规范决策
+1.  **路径约定**：遵循 `api/[controller]/[action]`。利用 C# 的类名和方法名自然生成路径，保持代码即文档。
+2.  **Swagger 自动化**：强制开启 Swagger。后端改代码，前端看网页，禁止手写 Word 文档。
+3.  **DTO 强约束**：
+    *   **输入**：使用 `xxxRequest` 类。
+    *   **输出**：使用 `xxxResponse` 类。
+    *   **禁忌**：绝对不要把数据库实体直接扔给前端，防止泄露密码字段或产生循环引用报错。
+
+---
+
+## TODO 开发任务追踪清单
+
+### 第一阶段：基础设施
+- [ ] **DB 环境**：配置 EF Core + SQLite，创建第一个 Migration 并生成数据库。
+- [ ] **DI 自动化**：在 `Program.cs` 研究或引入 `Scrutor` 库，实现“所有 Service 自动注册”，消除手动注册的烦恼。
+- [ ] **全局异常处理**：写一个过滤器，确保后端报错时，前端收到的是清晰的 JSON 而不是 HTML 报错页。
+
+### 第二阶段：业务逻辑开发（垂直切片实践）
+- [ ] **用户切片**：完成 `User` 文件夹下的 Controller/Service/Dto 闭环。
+- [ ] **订单切片（处理跨业务调用）**：在 `OrderService` 中尝试注入 `UserService`，跑通业务重叠场景。
+- [ ] **Shared 提取**：观察是否有超过 3 处重复的代码，将其重构至 `Shared` 文件夹。
+
+### 第三阶段：对接与文档
+- [ ] **接口清理**：检查 Swagger 文档，确保所有 API 注释清晰。
+- [ ] **DTO 精简**：检查返回类型，确保没有冗余字段流向前端。
+
+---
+**此文件作为项目根目录下的架构决策书。所有后续逻辑开发应遵守“垂直切片”与“DI 注入”原则。若遇到复杂的跨业务调用，优先参考第三部分方案。**
+
+
+
+
+这份文档详细记录了关于本项目架构设计的深度思考、疑问解答及最终的技术决策路径。它将作为项目根目录下的核心指导文件，用于指导后续开发并保持设计意图的一致性。
+
+---
+
+# C# Web API 项目开发架构蓝图与开发指南
+
+## 核心哲学：后端的三段式本质
+后端开发的核心被定义为 **IPO 模型 (Input - Process - Output)**，即：
+1. **获取数据**：数据从何处来？如何持久化？
+2. **处理数据**：业务逻辑在哪里写？如何组织？如何流转？
+3. **返回数据**：如何通过控制器与前端约定并交付成果？
+
+---
+
+## 第一部分：数据存储策略（Data Source & Persistence）
+
+### 原始疑问与思考
+*   **存储媒介选择**：是用 JSON 存数据，还是用 SQL 数据库？
+*   **JSON 的痛点**：
+    *   分散的一堆配置文件管理起来极其麻烦。
+    *   如果集中在一起，安全性难以保证（单点损坏、并发读写锁死）。
+    *   “配置文件”与“真正的数据文件”定义模糊。
+    *   **目录结构难题**：如果用多个 JSON 文件，路径太深、名字重复、查询不便、维护成本极高。
+*   **SQL 的顾虑**：EF Core 固然方便，但对于某些基础类型或简易配置，是否显得太重？
+
+### 深度解答与决策
+*   **明确边界**：
+    1.  **系统配置**：使用 `appsettings.json`。利用 ASP.NET Core 原生的 `IConfiguration` 或 `IOptions<T>` 模式。**不要**手动去写文件读取工具。
+    2.  **业务数据**：**坚决杜绝使用纯 JSON 文件充当数据库**。改用 **EF Core + 数据库**。
+*   **轻量化方案**：
+    *   如果不想安装笨重的数据库软件（如 SQL Server），则选用 **SQLite**。它是一个单一文件数据库，既有文件的便携性，又有 SQL 的事务安全性和查询能力。
+*   **目录管理方案**：
+    *   数据库文件统一放在根目录或指定的 `Data` 文件夹。
+    *   物理文件路径不再由业务逻辑手动拼接，而是由数据库驱动和 EF Core 的 `Migration` 机制自动维护。
+
+---
+
+## 第二部分：业务逻辑与组织架构（Logic & Architecture）
+
+### 原始疑问与思考
+*   **逻辑写在哪？**：是写在控制器里，还是单独剥离？业务逻辑处理完后怎么发给控制器？
+*   **调用机制**：是控制器主动调用逻辑，还是某种异步通知？过程中是否涉及网络或文件请求？
+*   **目录组织**：我的想法是一个控制器对应一整套业务逻辑。计划在 `Controllers` 文件夹下按业务建子文件夹，例如 `Controllers/Order/` 下面同时放 `OrderController.cs`、`OrderService.cs` 和 `OrderDto.cs`。这种方式是否稳健？
+*   **复杂性应对**：如果业务复杂，如何拆分和组合？
+
+### 深度解答与决策
+*   **架构模式确认**：
+    *   用户提出的“业务子文件夹”模式即为 **垂直切片架构 (Vertical Slice Architecture)** 的雏形。这是一种高内聚的设计，优于传统的分层架构，被确认为**推荐方案**。
+*   **逻辑流转规范**：
+    1.  **Controller**：仅作为入口，负责接收请求、校验基础参数、调用 Service、返回结果。不写具体算法和数据库操作。
+    2.  **Service**：具体的业务执行者。
+    3.  **交互方式**：通过 **构造函数注入 (DI)** 进行同步/异步调用。
+*   **跨业务调用难题**：
+    *   **问题**：万一逻辑 A 需要调用逻辑 B，或者一个模型被多个控制器共用怎么办？
+    *   **解决建议**：
+        *   建立 `Features/Shared` 文件夹存放公用 DTO 或 Service。
+        *   Service 之间可以互相注入调用，但 Controller 严禁互相调用。
+        *   若模型在全系统通用（如 User 实体），则提取到 `Domain` 核心层。
+
+---
+
+## 第三部分：依赖注入 (DI) vs 手动实例 (new)
+
+### 原始疑问与辩论
+*   **用户的核心挑战**：为什么不直接在控制器里 `new` 一个 Service？
+    *   “DI 写起来太麻烦，还要在 `Program.cs` 注册。”
+    *   “我可以直接在构造函数里 `new` 那些套娃的依赖，最终给控制器的也只是一个 new 好的对象。”
+*   **用户认为的“new”优势**：直观、简单、不需要配置繁琐的注入容器。
+
+### 深度解答与核心逻辑（为什么必须 DI？）
+1.  **配置传参地狱**：如果底层 Service 需要连接字符串（从配置文件读），手动 `new` 会迫使你从 Controller 开始层层传递该字符串。
+2.  **生命周期与数据库安全**：`DbContext`（数据库连接）必须由框架管理。手动 `new` 无法保证在一次 HTTP 请求中共享同一个连接，会导致事务失效、连接池溢出和内存泄漏。
+3.  **框架集成**：系统自带的 `ILogger`、`IConfiguration` 只能通过 DI 获取。手动 `new` 无法“白嫖”这些系统服务。
+4.  **解耦与测试**：DI 允许在不修改 Controller 代码的情况下，随时更换底层实现（例如将发送邮件从“阿里云”换成“腾讯云”）。
+
+**最终共识**：业务类（Service）统一使用 DI 注入；纯数据包（DTO/Entity）使用 `new`。
+
+---
+
+## 第四部分：前端交互（Frontend Interaction）
+
+### 原始疑问与思考
+*   **API 定义**：接口路径直接由控制器名和 Action 名决定。
+*   **约定方式**：在文档里写清楚，让前端知道类型定义。
+
+### 深度解答与决策
+1.  **自动文档化**：严禁手动写文档。必须集成 **Swagger (NSwag/Swashbuckle)**，代码变动文档即刻更新。
+2.  **DTO 隔离**：**禁止将数据库实体类直接返回给前端**。必须定义 DTO（Data Transfer Objects），防止数据库字段泄露，并解决 JSON 序列化时的循环引用问题。
+3.  **RESTful 风格**：尽量使用 HTTP 动词（GET/POST/PUT/DELETE）来表达意图，而非在 URL 里写一长串方法名。
+
+---
+
+## 最终确定的目录结构示例
+
+```text
+/ProjectRoot
+├── /Features (原 Controllers 文件夹改名，更符合垂直切片定义)
+│   ├── /Order
+│   │   ├── OrderController.cs (API 入口)
+│   │   ├── OrderService.cs    (业务逻辑)
+│   │   ├── OrderDtos.cs       (输入输出模型)
+│   │   └── IOrderService.cs   (接口，可选)
+│   ├── /User
+│   │   ├── UserController.cs
+│   │   └── ...
+│   └── /Shared
+│       └── CommonDtos.cs      (跨业务公用模型)
+├── /Data
+│   ├── AppDbContext.cs        (EF Core 上下文)
+│   └── MyDatabase.db          (SQLite 数据库文件)
+├── appsettings.json           (系统配置)
+└── Program.cs                 (全局注册与 DI 配置)
+```
+
+---
+
+## TODO 开发任务清单
+
+- [ ] **初始化环境**
+    - [ ] 配置 EF Core 与 SQLite 连接。
+    - [ ] 确保 Swagger 在开发环境下正常启用。
+- [ ] **建立基础架构**
+    - [ ] 实现一个全流程的业务切片（例如 `User` 模块）。
+    - [ ] 测试 `UserController` -> `UserService` -> `DbContext` 的 DI 注入路径。
+- [ ] **自动化注入优化**
+    - [ ] (可选) 引入 `Scrutor` 库，实现 Service 的自动扫描注册，解决“手动注册麻烦”的问题。
+- [ ] **逻辑拆分实践**
+    - [ ] 当某个功能超过 500 行代码时，尝试将其拆分为子 Logic 并重新组合到主 Service 中。
+- [ ] **前后端对接约定**
+    - [ ] 规范返回值的包装格式（例如统一返回 `{ code, data, msg }`）。
+    - [ ] 确定 DTO 的命名规范（Request/Response 后缀）。
+
+---
+
+**备注**：此文档记录了关于“为什么这么做”的全部技术细节。在后续开发中，若对 DI 或目录结构产生怀疑，应回溯本文件关于“生命周期管理”和“垂直切片”的论述。
+
+========== $(File) ==========
+
+
+c:\D\01-Projects\Agentdendrite\大框架.md
+# 大框架混合架构桌面应用设计文档 (Electron + Vue + C#)
+
+## 1. 技术栈与架构选型
+
+### 1.1 技术组合
+
+- **前端框架**: Electron + Vue + TypeScript。
+- **后端框架**: C# ASP.NET Core Web API。
+- **评价**: 这是一个典型且成熟的"混合架构"桌面应用模式。相比于纯 Node.js 或 Python，C# 在处理复杂业务逻辑、强类型约束及后续 Agent 开发上具有优势。不随大流选择 JS/Python 而选择 C# 是合理的，适合构建稳健的桌面软件。
+
+### 1.2 运行机制与进程管理
+
+应用包含两个后端概念，但在职责上有所区分：
+
+1.  **Node.js 后端**:
+    - 隶属于 Electron 主进程。
+    - **核心职责**: 充当"管家"或"壳"。负责窗口管理、软件生命周期、系统级事件监听。
+    - **启动逻辑**: 负责拉起并监控 C# 后端进程。
+    - **数据职责**: 不参与核心业务数据处理。
+2.  **C# Web API 后端**:
+    - **核心职责**: 充当"大脑"。负责真实数据存储、业务逻辑处理、大模型 API 对接、上下文维护。
+    - **通信方式**: Vue 前端直接通过 HTTP/SSE 请求 C# 后端（流式响应），无需经过 Node.js 转发。
+
+---
+
+## 2. 数据模型与所有权归属
+
+### 2.1 数据的真实性定义
+
+- **后端即真理**: 后端才应该是真实数据的持有者。
+- **前端即视图**: 前端保留数据只是为了方便渲染画面。
+- **结论**: 真实数据由后端管理，但前后端都需要持有数据副本。
+
+### 2.2 同步时机
+
+由于前后端均持有数据，必须保持同步：
+
+1.  **第一次加载页面时**: 从后端拉取真理数据填充前端。
+2.  **修改前端数据时**: 当 Vue 数据自动更新时，立即将更新推送到后端。
+
+### 2.3 存储方案演进
+
+- **现状**: 硬编码配置（API Key、Endpoint、开启思考模式等），无上下文维护，仅单次请求。
+- **改进方案**:
+  - **软件配置**: 使用 `appsettings.json` 存储软件级配置。
+  - **业务数据**: 创建专门的 JSON 文件或引入 SQLite 存储。
+    - 聊天内容：需创建专门的文件/表存储。
+    - AI 配置：需创建专门文件存储 API 链接、Key、模型选择等。
+
+---
+
+## 3. 核心业务逻辑重构：聊天与上下文
+
+### 3.1 上下文维护
+
+- **当前问题**: 后端未维护上下文，前端拼接文本单次发送。
+- **改进方向**: 由后端维护上下文。
+  - 后端存储历史对话记录。
+  - 前端仅需发送最新输入。
+  - 后端拼接历史上下文后调用大模型 API。
+
+### 3.2 多页面与扩展
+
+- 后续需支持多聊天页面管理，后端需储存不同聊天页面的数据。
+- 后续需支持 Agent 开发，需具备任务编排与状态管理能力。
+
+---
+
+## 4. 前端数据管理：自动更新器机制
+
+### 4.1 设计目标
+
+需要一个通用的"更新器"机制，在前端数据改变时自动同步至后端，无需手动干预。
+
+### 4.2 实现逻辑
+
+1.  **注册与监控**: 在前端将特定数据"锁住"或注册到监控系统中。
+2.  **触发更新**: 当被监控的数据发生变化（Vue 响应式触发），立即向后端发送请求。
+3.  **API 映射**: 自动判断应该调用哪个后端 API。
+
+---
+
+## 5. 后端 API 架构设计
+
+为了避免前端为每个细微变化（如一个按钮、一个开关）定义大量琐碎的 API，设计了分层控制策略。
+
+### 5.1 数据分类定义
+
+前端数据模型分为两个部分，对应两类 API：
+
+1.  **配置数据**:
+    - 页面卡片上的设置。
+    - 例如：选择哪一个 AI、是否开启思考模式、是否联网搜索、允许调用哪些功能。
+2.  **主数据**:
+    - 页面卡片的核心内容。
+    - 例如：聊天页面的消息流（长长的数组）、对话内容。
+
+### 5.2 配置控制器
+
+用于处理所有卡片的配置同步。
+
+- **设计理念**: 一个控制器处理所有配置，避免 API 泛滥。
+- **基础端口**:
+  - **通用请求格式**:
+    ```json
+    {
+      "handle": "数据句柄/标识符",
+      "value": "变更后的值"
+    }
+    ```
+  - **逻辑**: 前端传递 `handle`（指示修改哪里）和 `value`（修改成什么）。后端根据句柄修改对应的配置存储。
+  - **存储**: 所有配置可以汇聚到一个配置文件中统一读写。
+- **自定义端口**:
+  - 若配置逻辑过于复杂或调用频繁，可在该控制器内开设专用端口。
+
+### 5.3 主数据控制器
+
+用于处理核心业务数据。
+
+- **设计理念**: 视情况而定，若卡片涉及大型、连续传输或复杂数据流，则为其开设专用控制器。
+- **聊天页面示例**:
+  - 需要一个专门的控制器处理聊天业务。
+  - **功能端口**:
+    - 处理流式请求。
+    - 维护对话信息。
+    - 拉取全部上下文。
+    - 确认上下文是否最新。
+- **逻辑**: 前端只需提供一个最新的数据，具体的持久化和逻辑由后端该控制器完成。
+
+---
+
+## 6. 前后端数据结构对齐
+
+### 6.1 结构映射
+
+- **前端**: 以"卡片"为单位。每个卡片维护两部分数据：`配置数据` + `主数据`。
+- **后端**: 建议跟随前端的卡片模式进行对齐。
+  - **优势**: 前端加什么，后端加什么，逻辑完全对应，复杂度低。
+  - **替代方案**: 后端按传统方式汇集处理，但会增加映射复杂度。
+  - **结论**: 采用前后端完全对齐的卡片化数据结构。
+
+### 6.2 总结
+
+本软件架构旨在通过 C# 后端维护"数据真理"，利用 Vue 的响应式特性实现前端数据的自动同步，并通过"配置通用 API + 主数据专用 API"的策略，在保证灵活性的同时降低接口设计的复杂度，以支持未来多页面管理与 Agent 的扩展。
+
+
+========== $(File) ==========
+
+
+c:\D\01-Projects\Agentdendrite\文档1.md
+# Agentdendrite 项目总体设计与目标说明
+
+---
+
+# 一、项目概述
+
+**Agentdendrite** 是一个基于桌面环境的 **AI 智能体运行与构建平台**。
+项目的目标不是单纯实现一个聊天程序，而是逐步构建一个能够 **创建、管理、运行并组合多个智能体（Agents）** 的系统。
+
+系统允许用户通过图形界面组织 AI 能力，并逐渐构建复杂的自动化任务流程。
+
+从长期目标来看，Agentdendrite 更接近一种：
+
+* AI 自动化平台
+* 智能体运行环境
+* AI 工作流构建工具
+* AI 协作系统
+
+项目的设计思路是 **先构建骨架，再逐步填充功能**，整个开发过程将遵循渐进式扩展的策略。
+
+---
+
+# 二、开发理念
+
+整个项目遵循以下几个核心理念。
+
+## 1 骨架优先
+
+项目首先建立一个最小可运行的系统骨架。
+
+这个骨架只包含最基础能力：
+
+* 页面框架
+* 聊天能力
+* AI调用
+* 基本交互
+
+在骨架稳定后，再逐步添加：
+
+* 编辑器
+* 工具系统
+* 工作流系统
+* 多智能体协作
+
+---
+
+## 2 从简单到复杂
+
+开发流程采用逐级扩展模式：
+
+第一阶段只实现最小功能。
+
+随后随着使用和需求逐渐细化：
+
+* 页面能力
+* AI调用逻辑
+* 工具能力
+* 工作流能力
+
+功能不会一次性全部实现，而是通过多轮迭代逐步增加。
+
+---
+
+## 3 功能模块化
+
+系统设计成多个模块组合：
+
+* UI系统
+* AI系统
+* 工具系统
+* 工作流系统
+
+各模块之间保持松耦合。
+
+---
+
+## 4 AI作为核心能力
+
+整个系统围绕 AI 智能体构建。
+
+智能体不仅仅用于聊天，还可以：
+
+* 调用工具
+* 生成代码
+* 执行任务
+* 与其他智能体协作
+
+---
+
+# 三、系统总体架构
+
+整个系统由三个主要部分组成。
+
+---
+
+## 1 桌面应用层
+
+桌面应用是整个系统的用户界面。
+
+主要负责：
+
+* 页面展示
+* 用户操作
+* 聊天界面
+* 流程编辑
+* 智能体管理
+
+桌面应用运行在本地环境。
+
+---
+
+## 2 AI运行层
+
+AI运行层负责：
+
+* 管理智能体
+* 调用大模型
+* 处理对话
+* 管理上下文
+* 控制工具调用
+
+AI运行层是系统的核心逻辑层。
+
+---
+
+## 3 工具系统
+
+工具系统提供外部能力扩展。
+
+工具可以包括：
+
+* Web API
+* 本地程序
+* 数据服务
+* 计算工具
+* 文件系统
+
+工具允许 AI 执行实际任务。
+
+---
+
+# 四、技术架构
+
+当前项目使用以下技术组合。
+
+---
+
+## 桌面应用框架
+
+桌面应用使用 **Electron** 构建。
+
+Electron 的作用是：
+
+* 创建桌面窗口
+* 加载页面
+* 提供桌面环境能力
+
+Electron 负责运行整个桌面应用。
+
+---
+
+## 前端界面框架
+
+界面层使用 **Vue** 构建。
+
+Vue 用于：
+
+* 页面组件
+* UI渲染
+* 状态管理
+* 用户交互
+
+---
+
+## 后端服务
+
+系统未来会包含一个 **Web API 服务**。
+
+该服务主要负责：
+
+* AI调用
+* 工具执行
+* 数据处理
+* 任务管理
+
+当前设计中计划使用 **C# Web API** 作为服务端。
+
+---
+
+# 五、项目结构理念
+
+项目结构遵循以下原则：
+
+* 主程序逻辑放在 `src`
+* 构建和工具配置放在项目根目录
+* UI代码与Electron主进程分离
+
+项目主要分为三个运行区域：
+
+---
+
+## 主进程
+
+主进程负责：
+
+* 创建窗口
+* 管理应用生命周期
+* 控制桌面功能
+
+---
+
+## 渲染进程
+
+渲染进程运行前端界面。
+
+主要负责：
+
+* Vue界面
+* UI交互
+* 页面逻辑
+
+---
+
+## 预加载层
+
+预加载层负责：
+
+* 在安全模式下暴露接口
+* 连接主进程与渲染进程
+
+---
+
+# 六、核心系统功能
+
+系统的功能将逐步实现。
+
+---
+
+# 1 聊天系统
+
+系统最基础能力是 **聊天智能体**。
+
+聊天系统需要具备以下能力：
+
+* 用户输入消息
+* AI生成回复
+* 多轮对话
+* 流式输出
+
+AI输出采用 **Markdown格式**。
+
+界面只需要负责：
+
+* 渲染 Markdown
+* 显示对话轮次
+
+---
+
+## 流式输出机制
+
+AI回复不会一次返回完整内容。
+
+系统需要支持：
+
+* 后端持续获取模型输出
+* 将文本流发送到前端
+* 前端实时更新界面
+
+这种方式能够实现：
+
+**实时生成效果**
+
+---
+
+# 2 标签系统
+
+界面设计中将采用 **标签页结构**。
+
+每个标签代表一个工作环境。
+
+例如：
+
+* 一个聊天
+* 一个编辑器
+* 一个流程
+
+标签系统允许用户同时打开多个工作区域。
+
+---
+
+# 3 编辑器系统
+
+系统未来会加入一个编辑器。
+
+编辑器允许：
+
+* 编辑文本
+* 编写代码
+* 查看 AI 生成内容
+
+AI 可以直接在编辑器中：
+
+* 生成代码
+* 修改内容
+* 提供建议
+
+编辑器将成为 AI 工作环境的重要部分。
+
+---
+
+# 4 工具调用系统
+
+AI需要能够调用工具。
+
+工具调用机制包括：
+
+* AI请求工具
+* 系统执行工具
+* 返回结果给AI
+
+工具类型包括：
+
+* 网络接口
+* 本地计算
+* 数据处理
+* 文件操作
+
+---
+
+# 5 智能体系统
+
+系统中每个 AI 单元被称为 **智能体（Agent）**。
+
+智能体具备：
+
+* 对话能力
+* 工具调用能力
+* 任务执行能力
+
+智能体可以被创建、管理和调用。
+
+---
+
+# 6 多智能体协作
+
+系统允许智能体之间互相调用。
+
+例如：
+
+一个智能体负责规划任务。
+
+另一个智能体负责执行代码。
+
+这样形成一个 **协作系统**。
+
+---
+
+# 7 工作流系统
+
+系统最终会提供 **可视化流程图系统**。
+
+在流程图中：
+
+* 每个节点代表一个任务单元
+* 节点可以连接
+* 数据可以在节点之间流动
+
+节点可能包括：
+
+* AI节点
+* 工具节点
+* 数据节点
+
+用户可以通过拖拽构建复杂流程。
+
+---
+
+# 七、开发步骤规划
+
+整个项目开发分为多个阶段。
+
+---
+
+## 第一阶段：基础骨架
+
+实现最基础的功能：
+
+* Electron桌面应用
+* Vue界面
+* 聊天页面
+* AI流式输出
+
+这一阶段的目标是：
+
+创建一个 **会说话的智能体**。
+
+---
+
+## 第二阶段：完善聊天系统
+
+扩展聊天能力：
+
+* 多轮对话
+* 上下文管理
+* Markdown渲染
+
+---
+
+## 第三阶段：编辑器
+
+加入文本编辑器：
+
+* AI生成内容
+* AI修改内容
+* 人类编辑
+
+---
+
+## 第四阶段：工具调用
+
+AI开始调用外部工具。
+
+---
+
+## 第五阶段：智能体系统
+
+系统开始支持多个智能体。
+
+---
+
+## 第六阶段：流程系统
+
+构建最基础的工作流。
+
+---
+
+# 八、开发方法
+
+开发遵循以下策略。
+
+---
+
+## 逐步构建
+
+每次只实现一小部分功能。
+
+避免一次性设计过多复杂系统。
+
+---
+
+## 可运行优先
+
+每个阶段都必须保证：
+
+系统可以运行。
+
+---
+
+## 循环细化
+
+随着使用不断改进：
+
+* 页面结构
+* AI调用方式
+* 工具能力
+
+---
+
+# 九、长期目标
+
+Agentdendrite 最终目标是构建一个：
+
+**AI 自动化系统构建平台**
+
+用户可以在其中：
+
+* 创建智能体
+* 组合工具
+* 构建工作流
+* 自动执行任务
+
+系统可以逐步发展为：
+
+* AI 自动化开发环境
+* AI 工作流引擎
+* 智能体协作平台
+
+---
+
+# 十、项目定位
+
+Agentdendrite 不是：
+
+* 简单聊天工具
+* 单一 AI 应用
+
+它的定位是：
+
+**AI 能力组合平台**
+
+通过：
+
+* 智能体
+* 工具
+* 工作流
+
+三者组合构建复杂自动化能力。
+
+
+========== $(File) ==========
+
+
+
+c:\D\01-Projects\Agentdendrite\文档2.md
+
+这份文档为你将要开发的系统提供了一个全面、细致的顶层设计框架。它基于我们所有对话的梳理，剥离了具体的代码实现，专注于**核心理念、系统架构、功能模块以及最终要达成的业务逻辑**。
+
+你可以将它作为项目的 `README.md`、需求说明书或核心架构大纲。
+
+---
+
+# 个人 AI Agent 可视化工作流与操作系统 (项目代号暂定)
+
+## 一、 项目核心定位与哲学：提供“画布”，而非“成品”
+
+### 1. 核心理念：中立的底层物理世界
+本系统不是一个“开箱即用”的垂直场景 AI 工具（如自动写周报助手、特定文案生成器），而是一个高度自由的**本地化 AI 执行环境与工作流编排引擎**。
+系统只提供最基础的“物理规律”：**UI 交互、节点编排、数据持久化、标准化的工具调用接口（读写执行）**。系统不预设任何业务逻辑，一切工作流（Workflow）、系统提示词、Agent 行为，均由用户（或具备工具调用能力的 AI）自由创建和定义。
+
+### 2. 为什么不会被模型升级淘汰？
+*   **不卷提示词，做基础设施：** 无论大模型（如 GPT、Claude、DeepSeek）如何进化，它们要操作本地电脑、执行复杂多步网络请求、读写本地文件，永远需要一个“落地执行层”。
+*   **黑盒白盒化：** 模型越强，用户越需要一个界面（类似 IDE）来管理这些强大模型的权限、审查它们的日志、组合它们的行为。
+*   **高度自由的上限：** 本系统提供的是上限极高的“画布”。低端工具会被模型原生能力替代，但作为底座平台，模型能力的增强只会让在这个平台上运行的节点更加智能。
+
+### 3. “涌现”的自我进化能力（核心特质）
+*   **工作流即文件：** 所有可视化的工作流，在底层皆为标准格式（如 JSON/XML）的本地文件。
+*   **平等的修改权：** 只要赋予了 AI 最基础的 `ReadFile` 和 `WriteFile` 工具权限，AI 就可以直接读取、解析、修改甚至凭空创建新的工作流文件。
+*   **去特殊化设计：** 系统内**不存在**专门用于“生成工作流的复杂代码”。“AI 自己搭建工作流”仅仅是 AI 调用文件读写工具的一个自然结果，是系统基础物理规则交织后涌现出的能力。
+
+---
+
+## 二、 系统架构设计与技术栈
+
+系统采用彻底的前后端分离与“应用外壳（Application Shell）”模式设计。
+
+### 1. 前端（UI 与生命周期控制）
+*   **技术栈：** Electron + Web 技术栈（React/Vue 等，配合可视化图节点库如 React Flow/X6 等）。
+*   **核心职责：**
+    *   **生命周期管理：** 作为主流程控制器，决定何时启动后端服务、何时渲染画面。管理前后端端口握手，关闭时优雅地终止后端进程，防止孤儿进程。
+    *   **重度视图渲染：** 负责呈现 IDE 级别的复杂布局，包括标签组、节点画布、配置面板等。
+    *   **零核心业务逻辑：** 前端仅负责数据的输入、输出、拖拽交互与状态展示，不负责实际的工具调度与工作流运算。
+
+### 2. 后端（大脑与执行引擎）
+*   **技术栈：** C# Web API / .NET。
+*   **核心职责：**
+    *   **本地环回接口：** 暴露统一的 RESTful / WebSocket API 供前端或外部 IM 渠道调用。
+    *   **工作流引擎：** 解析工作流文件（JSON），负责图节点的拓扑排序、数据流转、条件分支判断与顺序执行。
+    *   **工具调度中心：** 管理所有内置和外部工具的注册与生命周期，通过标准输入输出（进程调用）或网络请求与各类外部工具通信。
+    *   **多入口路由：** 统一接收来自不同渠道（桌面 UI、外部 IM 等）的消息，并将其路由给对应的 Agent 或工作流。
+
+### 3. 数据层与持久化
+*   **技术栈：** SQL 数据库（如 SQLite 或 SQL Server + EF Core）、本地文件系统。
+*   **核心职责：**
+    *   存储聊天历史记录、执行日志、Agent 基础配置。
+    *   工作流定义本身以文件形式存储在系统的特定程序文件夹中，便于外部程序（或 AI）直接访问和修改。
+
+---
+
+## 三、 核心功能模块全景图
+
+### 模块一：IDE 级别的重度可视化 UI
+系统拥有比拟 VS Code 或 Photoshop 的专业级界面，主要包含：
+*   **自由插槽与标签系统：** 界面由可自由拖拽、分割、组合的标签组构成。用户可以同时打开“聊天面板”、“工作流编辑画布”、“工具配置面板”和“运行日志面板”。
+*   **工作流编排画布（节点图）：**
+    *   支持创建、连接、删除各类节点。
+    *   每个节点代表一个动作（如：拼接字符串、数学运算、运行 Python 脚本、调用 LLM、调用某特定工具）。
+    *   支持连线传递数据（节点 A 的输出作为节点 B 的输入）。
+    *   画布内可直接编辑节点的提示词、参数，并支持“点击播放”实时预览单节点或全流程的运行效果。
+*   **独立的配置面板：** 用于详细配置特定 Agent 的参数、绑定工具、设置多入口（IM 或 Web）的消息处理策略。
+
+### 模块二：统一的工具体系与接口
+系统对“工具”的定义高度抽象和统一，屏蔽了底层语言的差异：
+*   **标准调用规范：** 对于 AI 而言，无论是什么工具，最终都只呈现为“工具名称 + JSON 参数描述”。后端统一通过本地 API 环路分发调用请求。
+*   **工具的类型与来源：**
+    *   **内置工具：** 后端直接实现的基础能力（如文件读写、基础数学运算、执行 Shell 等）。
+    *   **外部扩展工具：** 放置在特定程序文件夹下的脚本（如 Python 脚本）或编译好的二进制程序。
+    *   **MCP / 第三方服务：** 支持接入 MCP Server 或其他外部 API，只需在系统中建立映射，使其符合系统的标准 JSON 调用规范即可。
+*   **工具池化管理：** 用户在 UI 中可纵览所有可用工具，并将其像积木一样“连线”授权给特定的 Agent。
+
+### 模块三：工作流与 Agent 运行引擎
+这是系统的业务心脏：
+*   **确定性与非确定性的结合：**
+    *   **确定性逻辑：** 诸如数据格式化、固定网络请求、顺序脚本执行，由连线和逻辑节点严格控制。
+    *   **非确定性逻辑：** 流程中可插入 Agent 节点，将上游数据交由 LLM 处理，LLM 可在限定的工具池内自主决策如何调用工具，并将最终结果输出给下游节点。
+*   **上下文与状态流转：** 引擎负责维护工作流执行时的全局上下文，确保跨节点的数据传递准确无误。
+
+### 模块四：多入口与无缝接入机制
+*   **入口解耦：** 聊天界面（IM）与系统核心逻辑剥离。桌面端的对话框只是其中一个 UI 呈现。
+*   **外部接入点：** 系统可配置各类 Webhook 或接口监听，从而使微信、飞书、Telegram 等外部 IM 成为触发系统内 Agent 和工作流的外部开关。
+
+---
+
+## 四、 相比 OpenClaw 的代差级优势
+
+系统在设计之初，就解决了同类开源项目（如 OpenClaw）的几个核心痛点：
+
+1.  **从 CLI/YAML 到 可视化 GUI：** 彻底抛弃了在终端运行、靠修改晦涩的 YAML 文件和 Markdown 来定义技能的原始方式。所有复杂的 Agent 逻辑、工具授权、执行流程均通过拖拽节点和界面配置完成，实现了逻辑的“白盒化”。
+2.  **从隐式 Prompt 路由 到 显式节点编排：** 复杂任务不再全靠 AI 的“盲猜”和“自由发挥”。用户可以通过工作流将一个大任务拆解，每一步该调用工具还是该进行逻辑运算，清晰可见，极大提高了执行的确定性和成功率。
+3.  **更健壮的后端底座：** 使用 C# Web API 替代 Node.js，在处理繁重的并发、本地进程拉起与多线程调度上，具有更天然的工程优势。
+4.  **进化闭环：** 因为“工作流即标准文本文件”的设计，赋予了系统极强的自扩展能力。系统不仅能执行任务，还能成为 AI 生成和优化新任务的母体。
+
+---
+
+## 五、 1个月（30天）极速 MVP 冲刺关键路径
+
+鉴于项目进入第一阶段的 1 个月开发倒计时，必须克制添加边缘功能的欲望，**锁定并打通最核心的物理链路**：
+
+*   **第 1 阶段：壳与骨架通信**
+    *   完成 Electron 外壳的搭建，实现对 C# 后端的正确拉起、端口分配与随动关闭。
+    *   实现前端与后端的本地 API 通信连通。
+*   **第 2 阶段：核心运行时（最小执行闭环）**
+    *   定义并实现 1-3 个最基础的节点类型（如：文本输入节点、调用 LLM 节点、输出节点）。
+    *   后端实现最简版的工作流解析器：能读取一段 JSON（代表图连线），按顺序将上一个节点的输出传给下一个节点，并打出日志。
+*   **第 3 阶段：基建工具与 AI 赋能（生命注入）**
+    *   实现两个不可或缺的内置工具：`ReadFile` 和 `WriteFile`。
+    *   跑通大模型的 Function Calling / Tool Use 机制，使得在聊天框输入指令时，AI 能够准确理解并调用上述两个本地文件工具。
+*   **第 4 阶段：极简前端交互**
+    *   引入现成的前端节点图库（React Flow 等），实现“在界面上拖拽两个节点并连线 -> 保存为本地 JSON 文件”。
+    *   提供一个基础的对话框界面，能与大模型对话，并展示其调用工具的中间状态。
+
+**结语：**
+这个系统不是一个静态的应用，而是一个可以自己生长的生态容器。一个月的目标不是雕刻完美的细节，而是打造出能够承载“文件读写、工具调用、节点解析”这三大物理规律的培养皿。只要这三点打通，系统就具备了无限的自我构建潜力。
+
+========== $(File) ==========
+
+
+c:\D\01-Projects\Agentdendrite\标签思考.md
+# AI 本地客户端 - 多窗口布局系统设计文档
+
+**文档版本**：v1.0
+**状态**：规划中
+**核心目标**：将单一的聊天窗口扩展为类似 IDE 或 Photoshop 的高自由度、可嵌套的标签页系统 (Docking Layout System)。
+
+---
+
+## 1. 核心概念定义
+
+系统由三个层级组成，采用**递归结构**：
+
+### 1.1 布局容器 (Layout Container)
+*   **定义**：不可见（或仅显示间距）的排版模具。
+*   **作用**：负责将空间切分，并管理内部子元素的排列顺序和比例。
+*   **属性**：
+    *   `type`: "container"
+    *   `direction`: 排列方向（从左到右 Row / 从上到下 Column）。
+    *   `children`: 包含子容器或标签组的数组。
+    *   `sizes`: 子元素的比例数组（使用百分比）。
+*   **行为**：
+    *   容器本身可以嵌套容器（实现四宫格、九宫格等复杂布局）。
+    *   调整尺寸时，调整的是容器内部的分割线比例。
+
+### 1.2 标签组 (Tab Group / Slot)
+*   **定义**：可视化的最小内容单元，用户眼中的“窗口”。
+*   **作用**：容纳一个或多个标签 (Tab)，提供标签切换和内容显示区域。
+*   **属性**：
+    *   `type`: "group"
+    *   `headerPosition`: 标签头位置（Top / Bottom / Left / Right）。
+    *   `isToolMode`: 是否为工具模式（隐式标签头）。
+    *   `activeTabId`: 当前显示的内容。
+*   **行为**：
+    *   如果不包含任何标签，该组通常应当被销毁或显示为空状态。
+    *   新标签默认填满当前组。
+
+### 1.3 标签 (Tab)
+*   **定义**：纯数据对象。
+*   **作用**：描述内容元数据。
+*   **属性**：
+    *   `id`: 唯一标识。
+    *   `title`: 标题文本。
+    *   `icon`: 图标。
+    *   `component`: 对应的组件名（如 ChatView, SettingsView）。
+    *   `data`: 传入组件的数据（如聊天记录指针）。
+
+---
+
+## 2. 功能交互细节
+
+### 2.1 布局逻辑
+*   **基础容器**：优先实现“线性容器”（Row/Col）。通过 Row 里面套 Col 的方式实现复杂网格（四宫格/九宫格），无需专门开发 Grid 容器。
+*   **尺寸调整**：
+    *   拖动分割线调整 `sizes` 百分比。
+    *   容器内的元素尽可能撑大（Flex-grow）。
+*   **初始化策略**：
+    *   默认创建一个全屏标签组。
+    *   当插入新组时，按 1/2, 1/3, 1/4 比例分割。
+
+### 2.2 标签组 (Tab Group) 交互
+*   **标签头位置 (Header Position)**：
+    *   **Top/Bottom**：水平排列。
+    *   **Left/Right**：垂直排列。
+    *   **切换方式**：通过右键菜单配置当前组的 Header 位置。
+*   **标签头响应式表现**：
+    *   当 Header 在侧边且宽度不足时，自动隐藏文字，仅显示图标。
+    *   当 Header 在顶部且数量过多时，支持 `Shift + 滚轮` 横向滚动。
+*   **关闭策略**：
+    *   **不显示关闭按钮**：为了节省空间，普通状态下不显示 `x` 按钮。
+    *   **操作方式**：
+        1.  双击标签头（可选）。
+        2.  鼠标中键点击标签头（推荐标准）。
+        3.  右键菜单选择关闭。
+    *   **定义**：关闭 = 销毁该标签实例；切换 = 仅仅是不显示内容。
+
+### 2.3 特殊模式：工具/单例模式 (Tool Mode)
+*   **场景**：用于工具栏、属性面板、状态切换器。
+*   **实现**：
+    *   本质上仍是一个 `Tab Group`。
+    *   配置项 `isToolMode = true`（或类似的 headless 属性）。
+    *   **表现**：隐藏标签头（Tab Header），直接显示内容区域（Content）。
+    *   **内容**：内容区域通常是一个包含状态按钮、复选框、下拉框的组件面板。
+
+### 2.4 拖拽与跨组 (未来规划)
+*   支持将标签从“组A”拖拽到“组B”。
+*   支持拖拽标签到“容器边缘”以创建新的分栏。
+
+---
+
+## 3. 数据结构方案 (JSON Schema)
+
+整个页面状态应保存为一个树形结构对象：
+
+```json
+{
+  "root": {
+    "id": "root_container",
+    "type": "container",
+    "direction": "row",
+    "sizes": [20, 80], // 左侧20%，右侧80%
+    "children": [
+      {
+        "id": "tool_panel",
+        "type": "group",
+        "headerPosition": "left",
+        "tabs": [ ... ] // 工具列表
+      },
+      {
+        "id": "main_area",
+        "type": "container", // 嵌套容器
+        "direction": "column",
+        "children": [
+          {
+            "id": "chat_group_1",
+            "type": "group",
+            "headerPosition": "top",
+            "activeTabId": "tab_1",
+            "tabs": [
+              { "id": "tab_1", "title": "Chat A", "type": "chat_view" },
+              { "id": "tab_2", "title": "Chat B", "type": "chat_view" }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 4. 开发路线图 (Roadmap)
+
+### 第一阶段：核心架构搭建 (Current Focus)
+1.  **文件结构创建**：
+    *   `components/layout/LayoutContainer.vue` (处理递归和 Flex 布局)
+    *   `components/layout/TabGroup.vue` (处理标签头逻辑)
+    *   `components/layout/TabContent.vue` (动态组件渲染)
+2.  **静态渲染**：手写一个 JSON 数据，跑通递归渲染，让页面显示出“左侧列表，右侧聊天”的静态布局。
+
+### 第二阶段：布局交互
+1.  **分割线拖拽**：实现 Container 内部子元素之间的宽度/高度调整。
+2.  **标签头功能**：实现标签点击切换内容、右键菜单改变 Header 位置（上下左右）。
+
+### 第三阶段：动态管理
+1.  **增删改**：实现从数据层面添加新标签、关闭标签。
+2.  **工具模式**：实现无头（Headless）标签组，用于放置设置或工具按钮。
+
+### 第四阶段：高级功能 (Future)
+1.  **拖拽重组**：实现跨窗口拖拽标签。
+2.  **开放容器 (Open Canvas)**：实现自由画布容器，允许子窗口任意悬浮定位。
+
+---
+
+# 基于原始想法的AI聊天客户端标签系统设计方案
+
+## 1. 当前状态
+已实现一个本地AI聊天客户端，包含：
+- 输入框（用于发送消息）
+- 内容显示区域（可渲染DOM）
+- 思维链展开/收起控件（一个小块，用于显示AI的推理过程）
+
+界面目前只有一个聊天对话框（相当于单个标签页）。
+
+## 2. 下一步目标
+在窗口中添加类似Adobe Photoshop的标签系统，支持：
+- 多个标签页（标签）
+- 标签组（容纳多个标签）
+- 标签组之间可以通过容器进行嵌套布局
+- 拖拽重组、调整比例、切换标签头位置等交互
+- 为后续添加更多工具页面（设置、知识库、绘画板等）打下基础
+
+## 3. 核心概念定义
+
+### 3.1 标签（Tab）
+标签是内容的基本单元，包含：
+- **标签头**：显示图标、标题，可包含关闭按钮（但关闭操作主要靠双击或右键菜单实现）。
+- **内容区域**：渲染具体的页面组件（如聊天界面、设置面板等）。
+标签本身不负责布局，只提供内容和头部信息。
+
+### 3.2 标签组（Tab Group）
+标签组是容纳多个标签的容器。
+- **结构**：
+  - 标签头列表（位于组的顶部、底部、左侧或右侧，可配置）
+  - 当前激活标签的内容区域（占据组内剩余空间）
+- **特性**：
+  - 一个标签组内同时只能显示一个标签的内容。
+  - 标签组可以包含任意数量的标签，但不能直接包含其他标签组（只能包含标签）。
+  - 标签头位置可通过右键菜单动态切换：
+    - 顶部/底部：标签头水平排列
+    - 左侧/右侧：标签头垂直排列
+  - 当标签头过多时，支持横向/纵向滚动（鼠标滚轮+Shift或键盘方向键）。
+  - 标签的关闭：双击标签头可关闭（即使该标签未激活）。关闭后若组内无标签，则标签组自动销毁。
+  - 标签头显示优化：
+    - 位于左侧/右侧且宽度不足时，只显示图标；宽度足够时显示图标+文字。
+    - 位于顶部/底部时，始终显示文字（宽度由内容自动撑开，超长时截断或滚动）。
+  - 标签组内必须始终有一个标签在内容区显示（不能为空）。
+
+### 3.3 标签组容器（Container）
+容器负责排列其内部的子元素（子元素可以是标签组，也可以是其他容器）。
+- 容器本身不可见（但可以设置背景色、间距等辅助视觉区分）。
+- **核心属性**：
+  - **布局模式**（基础）：
+    - 水平排列（子元素从左到右依次排列）
+    - 垂直排列（子元素从上到下依次排列）
+    - 网格排列（如2x2、3x3，行列比例可调）
+    - （未来可扩展：瀑布流、自由画布等）
+  - **子元素列表**：有序数组，每个元素要么是标签组，要么是另一个容器。
+  - **分隔条**：在子元素之间提供可拖拽的分隔线，用于调整相邻元素的尺寸比例（基于百分比，而非固定像素）。
+- **嵌套规则**：容器可以包含容器，从而实现复杂的嵌套布局（例如：一个水平容器内，第一个子元素是标签组，第二个子元素是一个垂直容器，垂直容器内再放两个标签组）。
+- **容器行为**：
+  - 当容器只有一个子元素时，该子元素占满整个容器空间。
+  - 有多个子元素时按比例分割，比例可通过拖拽分隔条调整。
+
+### 3.4 布局树结构
+整个窗口的布局由一棵树表示：
+- 根节点是一个**根容器**（默认为水平排列，可配置）。
+- 树的叶子节点都是**标签组**（每个标签组包含多个标签）。
+- 中间节点都是**容器**（负责布局）。
+
+示例：
+```
+根容器（水平）
+├─ 标签组A（聊天）
+├─ 容器（垂直）
+│  ├─ 标签组B（知识库）
+│  └─ 标签组C（设置）
+└─ 标签组D（绘画板）
+```
+
+## 4. 详细行为设计
+
+### 4.1 默认初始状态
+- 根容器采用水平排列。
+- 只有一个标签组，其中只包含一个标签（聊天页面）。此时该标签组自动占满整个窗口（100%宽度）。
+
+### 4.2 添加新标签/标签组
+- 用户可通过菜单或快捷键创建新标签（如新建聊天、打开设置）。新标签默认添加到**当前激活的标签组**中。
+- 若希望将新标签放在独立的新标签组中（即分割窗口），可通过：
+  - 拖拽标签头到窗口边缘
+  - 右键菜单“移动到新组”
+  此时会创建新的标签组，并自动调整容器布局（例如在根容器中插入新组，或根据拖拽位置创建嵌套容器）。
+
+### 4.3 标签组的创建与销毁
+- 当从现有标签组中拖出一个标签头到另一个标签组或空白区域时，可能触发新标签组的创建（例如拖到两个现有组之间的分隔线附近）。
+- 当标签组内最后一个标签被关闭时，该标签组自动销毁，并从父容器中移除。父容器会重新计算剩余子元素的布局（若父容器因此只剩一个子元素，则该子元素自动占满）。
+
+### 4.4 调整尺寸
+- 用户可拖拽容器之间的分隔线来调整相邻子元素的比例（百分比）。
+- 对于网格容器，可拖拽行分隔线或列分隔线调整行高/列宽比例。
+
+### 4.5 拖拽重组
+- 用户可按住任意标签头拖动：
+  - 拖到同一标签组内其他位置：重新排序标签。
+  - 拖到其他标签组：将标签添加到目标组，并从原组移除。
+  - 拖到两个现有标签组之间的分隔线附近：在目标位置创建新的标签组，并将该标签放入新组，同时调整容器布局（例如在水平容器的两个组之间插入一个新组）。
+- 拖拽过程中应有视觉反馈（如高亮可放置区域）。
+
+### 4.6 标签头的右键菜单
+右键点击标签头弹出菜单，包含以下选项：
+- 关闭标签
+- 关闭其他标签
+- 关闭所有标签
+- 标签头位置（顶部/底部/左侧/右侧）——仅影响当前标签组
+- 移动到新组（将当前标签移入新创建的标签组）
+- 重命名标签（如果标签支持）
+
+### 4.7 标签组内标签头尺寸调整
+- 当标签头位于左侧/右侧时，用户可横向拉伸标签头区域的宽度，从而在显示图标的基础上显示文字（宽度不足时只显示图标）。此调整仅在标签组内部进行，不影响外部容器尺寸。
+
+### 4.8 特殊标签组：单例标签组
+为满足某些场景（如工具面板、状态切换器），允许将标签组配置为“单例模式”：
+- 该标签组只允许包含一个标签，且不显示标签头（或标签头极小，只显示图标）。
+- 内容区域直接显示标签的内容，可用于放置一系列工具按钮、复选框等交互组件。
+- 这种标签组在布局树中仍作为叶子节点存在，但其内部标签的切换逻辑由内容自身实现（例如一组单选按钮），而不是通过标签头切换。
+
+### 4.9 数据持久化
+- 布局树结构（容器、标签组、标签信息）应序列化为JSON，支持保存和加载工作区。
+
+## 5. 技术实现规划（Vue）
+
+### 5.1 Vue组件划分
+1. **App.vue**：根组件，管理全局布局树数据，监听窗口大小变化，提供拖拽上下文。
+2. **Container.vue**：通用容器组件，根据布局模式渲染子元素，提供分隔条拖拽功能。
+   - props: `layout` (水平/垂直/网格等), `children` (子元素数组)
+   - 递归渲染子组件（可能是Container或TabGroup）
+3. **TabGroup.vue**：标签组组件，负责渲染标签头和当前激活标签的内容。
+   - props: `tabs` (标签数据数组), `activeIndex`, `headerPosition` (top/bottom/left/right)
+   - 内部处理标签头点击切换、关闭、拖拽起始事件。
+   - 标签头区域滚动处理。
+4. **Tab.vue**：标签数据模型（非独立组件），包含：
+   - `id`
+   - `title`
+   - `icon` (可选)
+   - `component` (动态组件配置，如聊天页面、设置页面等)
+   - `closable` (布尔)
+
+### 5.2 数据模型（TypeScript接口）
+```typescript
+interface LayoutNode {
+  type: 'container' | 'tabGroup';
+  // 如果是容器
+  layout?: 'horizontal' | 'vertical' | 'grid';
+  rows?: number;   // 网格行数
+  cols?: number;   // 网格列数
+  children?: LayoutNode[];  // 子节点
+  ratios?: number[]; // 子节点尺寸比例（可选）
+  // 如果是标签组
+  tabs?: Tab[];
+  activeTabId?: string;
+  headerPosition?: 'top' | 'bottom' | 'left' | 'right';
+}
+```
+
+### 5.3 关键交互实现思路
+- **拖拽**：使用HTML5拖拽API或自定义鼠标事件。在标签头mousedown时记录，移动时检测下方元素，释放时执行重组逻辑。
+- **分隔条拖拽**：监听mousedown，在mousemove时计算新比例，更新父容器的ratios数组，触发重新布局。
+- **动态递归渲染**：Container组件根据children数组递归渲染，每个子节点根据type渲染Container或TabGroup。
+
+## 6. 实现优先级
+1. 基础水平/垂直容器，支持分隔条拖拽调整比例。
+2. 标签组组件，支持标签头位置切换（顶部/底部/左侧/右侧）。
+3. 标签的添加、关闭（简单右键菜单）。
+4. 标签拖拽重组（同一组内排序，跨组移动）。
+5. 容器嵌套（通过右键菜单将标签组转换为容器等）。
+6. 网格容器。
+7. 单例标签组。
+8. 布局持久化（保存/加载工作区）。
+
+## 7. 总结
+以上设计方案完整覆盖了原始想法的所有要点，明确了标签、标签组、容器的概念及嵌套规则，并规划了交互细节与技术实现。接下来可按照优先级逐步实现，构建一个灵活强大的多标签管理界面，为AI聊天客户端扩展更多功能奠定基础。
+
+
+
+# 自由标签组容器相关-功能演化与价值定义文档
+
+## 1. 背景与起源
+
+在开发过程中，我们最初尝试将用于页面级标签管理的 `FreeTabGroupContainer`（自由标签组容器）复用于节点图功能的实现。最初的设计意图是利用现有的拖拽引擎，将“标签”视为“节点”，将“标签组容器”视为“画布”。
+
+经过深入的技术探讨与架构审查，我们确认了**标签业务模型**（一维列表、有限容器、收纳逻辑）与**节点图模型**（二维无限画布、连线逻辑、创作逻辑）存在本质差异。强行复用会导致“嵌套地狱”、语义崩塌以及坐标空间冲突。
+
+然而，已开发的代码并非废弃物。通过重新定义其应用场景，我们将该功能重构为**“高级工作区布局管理”**的核心组件。
+
+## 2. 核心功能定义：松散编组
+
+该功能的核心价值不再局限于传统的“标签页切换”，而是提供了一种类似 Photoshop 图层组或 Figma Frame 的**空间编组能力**。
+
+### 2.1 功能特性
+- **自由布局：** 标签卡可以从主标签栏拖出，成为独立的自由浮动卡片。
+- **松散聚合：** 用户可以通过框选或按住 Shift 多选，将多个位置分散、互不粘连的自由卡片打成一个逻辑组。
+- **整体联动：** 打组后，拖动组的外框或任一成员，组内所有卡片保持相对位置不变，实现整体移动。
+- **层级穿透：** 支持容器嵌套容器的结构，这意味着可以存在“组中组”，适应复杂的层级管理需求。
+
+### 2.2 与传统软件的对比
+| 软件类型 | 传统行为 | 本功能行为 |
+| :--- | :--- | :--- |
+| **VS Code** | 拖出的窗口相互独立，无法整体移动，只能通过 Dock 重新吸附。 | 支持将散落的窗口逻辑打组，无需物理吸附即可整体移动。 |
+| **Photoshop** | 文档组必须紧贴在一起，必须处于同一容器内。 | 支持“松散编组”，卡片之间可以有空间间隔，只要逻辑上是一个组即可移动。 |
+
+## 3. 应用场景设想
+
+### 3.1 场景一：任务工作区快照
+用户在处理特定任务时，往往需要打开多个相关面板（如：代码编辑器、控制台、API文档、预览窗口）。
+- **痛点：** 每次切换任务需要重新排列这些窗口，或者窗口散落各处难以管理。
+- **解决方案：** 用户将这些面板“打组”，形成一个逻辑工作区。该组可以被整体推到屏幕边缘、最小化，或者作为模板保存。下次需要该工作流时，直接调出该组，所有面板瞬间归位，且保持用户习惯的相对间距。
+
+### 3.2 场景二：面板间的参数联动
+这是一个极具潜力的进阶功能。利用自由标签组容器的嵌套与空间管理能力，我们可以引入类似节点图的**数据绑定**概念，而不需要真正开发一个复杂的节点编辑器。
+
+- **功能描述：**
+  - 用户在“自由标签组容器”中，可以将不同面板（标签卡）之间的数值参数进行连线。
+  - 例如：将一个“颜色选择器面板”的输出值，连线到一个“图表配置面板”的颜色输入值上。
+  
+- **交互逻辑：**
+  - **连接：** 类似于节点连线，从一个面板的输出端口拖拽到另一个面板的输入端口。
+  - **同步：** 建立连接后，调整主面板的数值，从面板的数值会实时同步更新。
+  - **分组管理：** 这种联动关系依托于“自由标签组容器”。当容器被移动或关闭时，内部的联动逻辑随之保留或销毁。
+
+- **价值：** 用户无需在不同面板间来回切换调整参数，可以通过“联动”实现“调一控多”，极大地提升了复杂配置场景下的操作效率。
+
+## 4. 技术架构定位
+
+### 4.1 代码保留理由
+- **复用性：** 该容器本质上是一个实现了“二维空间拖拽”、“层级管理”和“相对坐标计算”的高级布局引擎。
+- **扩展性：** 它不直接处理节点图的“数据流”逻辑，而是作为“视图容器”存在。这符合 View 与 Model 分离的原则。未来的节点图功能可以作为一个独立的 ViewModel 运行，而该容器负责 View 层的呈现。
+
+### 4.2 结论
+该功能从最初的“节点图复用尝试”演变为“高级窗口管理系统”。它赋予了软件类似思维导图或白板的空间组织能力，并结合“参数联动”设想，为用户提供了从“被动排列窗口”到“主动组织工作流”的跨越体验。
+
+该模块代码予以保留，作为独立的功能模块沉淀，待后续 UI 交互设计完善后集成。
+
+
+========== $(File) ==========
+
+
+c:\D\01-Projects\Agentdendrite\目录结构-渲染想法.md
+src
+├── features/                # ← 你的“全能文件夹”，所有功能模块都在这
+│   ├── layout/              # 布局系统模块
+│   │   ├── models/          # 数据模型 (PageLayout.ts)
+│   │   ├── stores/          # 逻辑与状态 (useLayout.ts)
+│   │   └── views/           # 组件 (FreeFolder.vue, TagFolder.vue)
+│   │
+│   ├── editor/              # 未来可能的编辑器模块
+│   │   ├── models/
+│   │   ├── stores/
+│   │   └── views/
+│   │
+│   └── file-explorer/       # 未来可能的文件树模块
+│       ├── models/
+│       ├── stores/
+│       └── views/
+│
+├── shared/                  # ← 真正的“通用文件夹”
+│   ├── components/          # 跨模块通用的原子组件 (Button, Input, Icon)
+│   ├── utils/               # 工具函数
+│   └── styles/              # 全局样式
+│
+├── views/                   # 路由层面的页面 (如 AiChat 整个大页面)
+│   └── tabs/
+│
+├── App.vue
+└── main.ts
+
+
+
+========== $(File) ==========
+
+
+// src/main/index.ts
+import { app, shell, BrowserWindow, session } from 'electron'
+import { join } from 'path'
+import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import icon from '../../resources/icon.png?asset'
+
+function createWindow(): void {
+  // 创建浏览器窗口
+  const mainWindow = new BrowserWindow({
+    width: 900,
+    height: 670,
+    show: false,
+    autoHideMenuBar: true,
+    ...(process.platform === 'linux' ? { icon } : {}),
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+      sandbox: false
+    }
+  })
+
+  mainWindow.on('ready-to-show', () => {
+    mainWindow.show()
+  })
+
+  mainWindow.webContents.setWindowOpenHandler((details) => {
+    shell.openExternal(details.url)
+    return { action: 'deny' }
+  })
+
+  // 基于 electron-vite cli 的渲染进程热更新
+  // 开发环境加载远程 URL，生产环境加载本地 html 文件
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  } else {
+    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+}
+
+// 此方法将在 Electron 完成初始化并准备创建浏览器窗口时调用
+// 某些 API 只能在此事件发生后使用
+app.whenReady().then(() => {
+  // 设置 Windows 应用的用户模型 ID
+  electronApp.setAppUserModelId('com.electron')
+
+  const backendPorts = [5068, 7085]
+
+  // 定义允许的后端地址列表
+  const allowedOrigins = backendPorts.flatMap((port) => [
+    `http://localhost:${port}`,
+    `https://localhost:${port}`
+  ])
+
+  // 2. 为所有会话设置 Content-Security-Policy
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const cspDirectives = [
+      "default-src 'self'",
+      "script-src 'self'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data:",
+      // 动态拼接生成的 URL 列表
+      `connect-src 'self' ${allowedOrigins.join(' ')}`
+    ]
+
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [cspDirectives.join('; ')]
+      }
+    })
+  })
+
+  // 3. 忽略这些端口的证书错误
+  app.on('certificate-error', (event, _webContents, url, _error, _certificate, callback) => {
+    // 检查请求的 URL 是否在我们的允许列表内
+    const isAllowed = allowedOrigins.some((origin) => url.startsWith(origin))
+
+    if (isAllowed) {
+      event.preventDefault()
+      callback(true) // 信任证书
+    } else {
+      callback(false)
+    }
+  })
+
+  // 开发环境默认按 F12 打开或关闭 DevTools
+  // 生产环境忽略 CommandOrControl + R
+  // 参见 https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
+  app.on('browser-window-created', (_, window) => {
+    optimizer.watchWindowShortcuts(window)
+  })
+
+  createWindow()
+
+  app.on('activate', function () {
+    // 在 macOS 上，点击 Dock 图标且没有其他窗口打开时
+    // 通常会重新创建一个窗口
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+})
+
+// 当所有窗口都关闭时退出应用，macOS 除外
+// 在 macOS 上，应用和菜单栏通常会保持活动状态
+// 直到用户使用 Cmd + Q 显式退出
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit()
+  }
+})
+
+// 在此文件中，你可以包含应用特定的主进程代码
+// 也可以将它们放在单独的文件中，然后在这里引入
+
+
+========== $(File) ==========
+
+
+// src/renderer/src/App.vue
+
+<script setup lang="ts">
+import TagFolder from './features/layout/views/TagFolder.vue'
+// 同时引入底层和顶层数据
+import { layoutData, topLayoutData } from './features/layout/stores/useLayout'
+</script>
+
+<template>
+  <div class="app-container">
+    <!-- 套的一层 div，用来建立重叠坐标系 -->
+    <div class="stack-wrapper">
+      <!-- 底层：渲染常规布局 -->
+      <TagFolder :folder-data="layoutData" class="layer-base" />
+
+      <!-- 顶层：完全重叠，渲染浮动窗口 -->
+      <TagFolder :folder-data="topLayoutData" class="layer-overlay" />
+    </div>
+  </div>
+</template>
+
+<style>
+html,
+body,
+#app {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.app-container {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  padding: 6px;
+  box-sizing: border-box; /* 防止 padding 撑开滚动条 */
+}
+
+/* 关键：重叠容器 */
+.stack-wrapper {
+  position: relative;
+  flex: 1; /* 填满 app-container */
+  width: 100%;
+  height: 100%;
+}
+
+/* 关键：两个层共有的定位样式 */
+.layer-base,
+.layer-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* 底层层级 */
+.layer-base {
+  z-index: 1;
+}
+
+/* 顶层层级 */
+.layer-overlay {
+  z-index: 2;
+}
+
+/* 1. 顶层容器设为穿透。
+   此时，整个 layer-overlay 及其内部所有东西默认都点不到了，
+   鼠标会直接作用到底层 layer-base 上。 */
+.layer-overlay {
+  pointer-events: none;
+}
+
+/* 2. 精确恢复：只给“真正需要交互的窗口”恢复交互。
+   把 .is-floating 及其内部所有元素设为 auto。 */
+.layer-overlay .is-floating {
+  pointer-events: auto;
+}
+</style>
+
+
+========== $(File) ==========
+
+
+import { setActiveTabInTree, removeNodeFromTree } from './layoutEngine'
+import { handleMoveNode, handleSwapNodes, handleDuplicateNode } from './layoutCoordinator'
+import type { CanvasTagFolderData } from '../models/PageLayout'
+
+export type LayoutAction =
+  | { type: 'CLOSE_FOLDER'; id: string }
+  | { type: 'SET_ACTIVE_TAB'; id: string; tabName: string }
+  | { type: 'MOVE_NODE'; id: string; targetContainerId: string; position?: [number, number] }
+  | { type: 'SWAP_NODES'; nodeAId: string; nodeBId: string }
+  | { type: 'DUPLICATE_NODE'; id: string; targetContainerId: string; position?: [number, number] }
+
+export const dispatchAction = (layers: CanvasTagFolderData[], action: LayoutAction): void => {
+  console.log('Dispatcher收到指令:', action.type, action)
+
+  switch (action.type) {
+    case 'MOVE_NODE': {
+      handleMoveNode(layers, action.id, action.targetContainerId, action.position)
+      break
+    }
+
+    case 'SWAP_NODES': {
+      handleSwapNodes(layers, action.nodeAId, action.nodeBId)
+      break
+    }
+
+    case 'DUPLICATE_NODE': {
+      handleDuplicateNode(layers, action.id, action.targetContainerId, action.position)
+      break
+    }
+
+    case 'CLOSE_FOLDER': {
+      for (const layer of layers) {
+        if (removeNodeFromTree(layer.data, action.id)) {
+          console.log(`指令由层 ${layer.id} 处理成功`)
+          return
+        }
+      }
+      break
+    }
+
+    case 'SET_ACTIVE_TAB': {
+      for (const layer of layers) {
+        if (setActiveTabInTree(layer.data, action.id, action.tabName)) {
+          console.log(`指令由层 ${layer.id} 处理成功`)
+          return
+        }
+      }
+      break
+    }
+
+    default:
+      console.warn('未知的 Action:', action)
+  }
+}
+
+
+========== $(File) ==========
+
+
+// src/renderer/src/features/layout/logic/layoutCoordinator.ts
+import { extractNodeFromTree, insertNodeIntoTree, TreeNode } from './layoutEngine'
+import type { CanvasTagFolderData } from '../models/PageLayout'
+
+export const handleMoveNode = (
+  layers: CanvasTagFolderData[],
+  nodeId: string,
+  targetContainerId: string,
+  position?: [number, number]
+): boolean => {
+  let extractedNode: TreeNode | null = null
+
+  for (const layer of layers) {
+    extractedNode = extractNodeFromTree(layer.data, nodeId)
+    if (extractedNode) {
+      console.log(`节点 ${nodeId} 已从层 ${layer.id} 提取`)
+      break
+    }
+  }
+
+  if (!extractedNode) {
+    console.warn(`跨层移动失败: 找不到源节点 ${nodeId}`)
+    return false
+  }
+
+  let isInserted = false
+  for (const layer of layers) {
+    isInserted = insertNodeIntoTree(layer.data, targetContainerId, extractedNode, position)
+    if (isInserted) {
+      console.log(`节点 ${nodeId} 已成功跨层移动到 ${targetContainerId}`)
+      return true
+    }
+  }
+
+  console.error(`跨层移动失败: 找不到目标容器 ${targetContainerId}，执行回滚/丢弃策略`)
+  return false
+}
+
+export const handleMoveNodeWithFallback = (
+  layers: CanvasTagFolderData[],
+  nodeId: string,
+  targetContainerId: string,
+  fallbackContainerId: string,
+  position?: [number, number]
+): boolean => {
+  let extractedNode: TreeNode | null = null
+
+  for (const layer of layers) {
+    extractedNode = extractNodeFromTree(layer.data, nodeId)
+    if (extractedNode) break
+  }
+
+  if (!extractedNode) {
+    console.warn(`跨层移动失败: 找不到源节点 ${nodeId}`)
+    return false
+  }
+
+  let isInserted = insertNodeIntoTree(layers[0].data, targetContainerId, extractedNode, position)
+
+  if (!isInserted) {
+    console.warn(`目标容器 ${targetContainerId} 不存在，回滚到备用容器 ${fallbackContainerId}`)
+    isInserted = insertNodeIntoTree(layers[0].data, fallbackContainerId, extractedNode, position)
+  }
+
+  return isInserted
+}
+
+export const handleSwapNodes = (
+  layers: CanvasTagFolderData[],
+  nodeAId: string,
+  nodeBId: string
+): boolean => {
+  let nodeA: TreeNode | null = null
+  let nodeB: TreeNode | null = null
+  let nodeALayer: CanvasTagFolderData | null = null
+  let nodeBLayer: CanvasTagFolderData | null = null
+
+  for (const layer of layers) {
+    if (!nodeA) {
+      nodeA = extractNodeFromTree(layer.data, nodeAId)
+      if (nodeA) nodeALayer = layer
+    }
+    if (!nodeB) {
+      nodeB = extractNodeFromTree(layer.data, nodeBId)
+      if (nodeB) nodeBLayer = layer
+    }
+    if (nodeA && nodeB) break
+  }
+
+  if (!nodeA || !nodeB) {
+    console.warn(`交换节点失败: 找不到源节点 ${!nodeA ? nodeAId : nodeBId}`)
+    return false
+  }
+
+  if (nodeALayer && nodeB) {
+    insertNodeIntoTree(nodeALayer.data, nodeALayer.id, nodeB)
+  }
+  if (nodeBLayer && nodeA) {
+    insertNodeIntoTree(nodeBLayer.data, nodeBLayer.id, nodeA)
+  }
+
+  console.log(`节点 ${nodeAId} 和 ${nodeBId} 交换成功`)
+  return true
+}
+
+export const handleDuplicateNode = (
+  layers: CanvasTagFolderData[],
+  nodeId: string,
+  targetContainerId: string,
+  position?: [number, number]
+): boolean => {
+  for (const layer of layers) {
+    const sourceNode = findNodeInTree(layer.data, nodeId)
+    if (sourceNode) {
+      const clonedNode = JSON.parse(JSON.stringify(sourceNode))
+      clonedNode.id = `${nodeId}_copy_${Date.now()}`
+
+      const isInserted = insertNodeIntoTree(layer.data, targetContainerId, clonedNode, position)
+      if (isInserted) {
+        console.log(`节点 ${nodeId} 已复制到 ${targetContainerId}`)
+        return true
+      }
+    }
+  }
+
+  console.warn(`复制节点失败: 找不到源节点 ${nodeId} 或目标容器 ${targetContainerId}`)
+  return false
+}
+
+const findNodeInTree = (treeData: TreeNode[], targetId: string): TreeNode | null => {
+  for (const item of treeData) {
+    if (item.id === targetId) {
+      return item
+    }
+    if (item.type === 'canvas' || item.type === 'free-canvas' || item.type === 'full-free-canvas') {
+      const found = findNodeInTree(item.data as TreeNode[], targetId)
+      if (found) return found
+    } else if (item.type === 'shell' || item.type === 'free-shell') {
+      const content = item.data[0]
+      if (content && 'type' in content && content.type === 'full-free-canvas') {
+        const found = findNodeInTree(content.data as TreeNode[], targetId)
+        if (found) return found
+      }
+    }
+  }
+  return null
+}
+
+
+========== $(File) ==========
+
+
+// src/renderer/src/features/layout/logic/layoutEngine.ts
+import {
+  TagFolderItem,
+  FreeFolderItem,
+  FullCanvasFreeFolderData,
+  ShellFreeFolderData,
+  TagLeafData
+} from '../models/PageLayout'
+
+export type TreeNode = TagFolderItem | FreeFolderItem | FullCanvasFreeFolderData | TagLeafData
+
+export const setActiveTabInTree = (
+  treeData: TreeNode[],
+  targetLeafId: string,
+  tabName: string
+): boolean => {
+  for (const item of treeData) {
+    if (item.type === 'shell' || item.type === 'free-shell') {
+      const content = item.data[0]
+      if ('activeTabName' in content && content.id === targetLeafId) {
+        content.activeTabName = tabName
+        return true
+      }
+      if (!('activeTabName' in content) && content.type === 'full-free-canvas') {
+        if (setActiveTabInTree(content.data as TreeNode[], targetLeafId, tabName)) return true
+      }
+    }
+    if (item.type === 'canvas' || item.type === 'free-canvas' || item.type === 'full-free-canvas') {
+      if (setActiveTabInTree(item.data as TreeNode[], targetLeafId, tabName)) return true
+    }
+  }
+  return false
+}
+
+export const removeNodeFromTree = (treeData: TreeNode[], targetId: string): boolean => {
+  const index = treeData.findIndex((node) => node.id === targetId)
+
+  if (index !== -1) {
+    const node = treeData[index]
+
+    if (
+      (node.type === 'canvas' || node.type === 'free-canvas' || node.type === 'full-free-canvas') &&
+      node.protected
+    ) {
+      return false
+    }
+
+    treeData.splice(index, 1)
+    return true
+  }
+
+  for (let i = 0; i < treeData.length; i++) {
+    const item = treeData[i]
+
+    if (item.type === 'canvas' || item.type === 'free-canvas' || item.type === 'full-free-canvas') {
+      if (removeNodeFromTree(item.data as TreeNode[], targetId)) {
+        if (item.data.length === 0 && !item.protected) {
+          treeData.splice(i, 1)
+        }
+        return true
+      }
+    } else if (item.type === 'shell' || item.type === 'free-shell') {
+      const content = item.data[0]
+      if (!content) continue
+
+      if ('activeTabName' in content && content.id === targetId) {
+        treeData.splice(i, 1)
+        return true
+      } else if ('type' in content && content.type === 'full-free-canvas') {
+        if (removeNodeFromTree(content.data as TreeNode[], targetId)) {
+          if (content.data.length === 0 && !content.protected) {
+            treeData.splice(i, 1)
+          }
+          return true
+        }
+      }
+    }
+  }
+
+  return false
+}
+
+export const extractNodeFromTree = (treeData: TreeNode[], targetId: string): TreeNode | null => {
+  const index = treeData.findIndex((item) => item.id === targetId)
+  if (index !== -1) {
+    const item = treeData[index]
+
+    if (
+      (item.type === 'canvas' || item.type === 'free-canvas' || item.type === 'full-free-canvas') &&
+      item.protected
+    ) {
+      return null
+    }
+    return treeData.splice(index, 1)[0]
+  }
+
+  for (let i = 0; i < treeData.length; i++) {
+    const item = treeData[i]
+
+    if (item.type === 'canvas' || item.type === 'free-canvas' || item.type === 'full-free-canvas') {
+      const extracted = extractNodeFromTree(item.data as TreeNode[], targetId)
+      if (extracted) {
+        if (item.data.length === 0 && !item.protected) {
+          treeData.splice(i, 1)
+        }
+        return extracted
+      }
+    } else if (item.type === 'shell' || item.type === 'free-shell') {
+      const content = item.data[0]
+      if (!content) continue
+
+      if ('activeTabName' in content && content.id === targetId) {
+        return treeData.splice(i, 1)[0]
+      } else if ('type' in content && content.type === 'full-free-canvas') {
+        const extracted = extractNodeFromTree(content.data as TreeNode[], targetId)
+        if (extracted) {
+          if (content.data.length === 0 && !content.protected) {
+            treeData.splice(i, 1)
+          }
+          return extracted
+        }
+      }
+    }
+  }
+  return null
+}
+
+export const insertNodeIntoTree = (
+  treeData: TreeNode[],
+  targetContainerId: string,
+  nodeToInsert: TreeNode,
+  position?: [number, number]
+): boolean => {
+  for (const item of treeData) {
+    if (item.id === targetContainerId) {
+      if (position && (item.type === 'free-canvas' || item.type === 'full-free-canvas')) {
+        const shellNode = nodeToInsert as ShellFreeFolderData
+        if (shellNode.type === 'free-shell') {
+          shellNode.position = position
+        }
+      }
+      if (
+        item.type === 'canvas' ||
+        item.type === 'free-canvas' ||
+        item.type === 'full-free-canvas'
+      ) {
+        ;(item.data as TreeNode[]).push(nodeToInsert)
+      }
+      return true
+    }
+    if (item.type === 'canvas' || item.type === 'free-canvas' || item.type === 'full-free-canvas') {
+      if (insertNodeIntoTree(item.data as TreeNode[], targetContainerId, nodeToInsert, position))
+        return true
+    } else if (item.type === 'shell' || item.type === 'free-shell') {
+      const content = item.data[0]
+      if (content.type === 'full-free-canvas') {
+        if (
+          insertNodeIntoTree(content.data as TreeNode[], targetContainerId, nodeToInsert, position)
+        )
+          return true
+      }
+    }
+  }
+  return false
+}
+
+
+========== $(File) ==========
+
+
+// src/renderer/src/features/layout/models/PageLayout.ts
+/**
+ * 1. 基础枚举与叶子定义
+ */
+export type LayoutDirection = 'row' | 'col'
+export type TabHeaderPosition = 'top' | 'bottom' | 'left' | 'right' | 'none'
+export type LeafType = 'normal' | 'placeholder' | 'singleton'
+
+export interface TagData {
+  title: string
+  tabName: string
+}
+
+/**
+ * 最小单元：标签组叶子数据 (Leaf)
+ * 仅包含实际业务标签的数据
+ */
+export interface TagLeafData {
+  id: string
+  type: LeafType
+  activeTabName: string
+  tabHeaderPosition: TabHeaderPosition
+  data: TagData[]
+}
+
+// ==========================================================
+// 2. 普通标签组系统 (网格/列表布局)
+// ==========================================================
+
+/**
+ * 标签组网格项联合类型 (TagFolderItem)
+ * 允许在网格数组中混装“壳”与“画布”
+ */
+export type TagFolderItem = ShellTagFolderData | CanvasTagFolderData
+
+/**
+ * 标签组容器壳 (Shell)
+ * 作用：网格占位符，持有比例 (ratio)。
+ * 它的内容是单一的：要么是标签组叶子，要么是无尺寸自由画布。
+ */
+export interface ShellTagFolderData {
+  type: 'shell'
+  id: string
+  ratio: number & { __brand: '0-1-range' }
+  data: [TagLeafData] | [FullCanvasFreeFolderData]
+}
+
+/**
+ * 画布标签组容器 (Canvas)
+ * 作用：管理多个网格项（壳或子画布）的排列方向。
+ */
+export interface CanvasTagFolderData {
+  type: 'canvas'
+  id: string
+  ratio: number & { __brand: '0-1-range' }
+  direction: LayoutDirection
+  data: TagFolderItem[]
+  protected?: boolean
+}
+
+// ==========================================================
+// 3. 自由标签组系统 (浮动布局)
+// ==========================================================
+
+/**
+ * 自由项联合类型 (FreeFolderItem)
+ * 仅允许在自由画布数组中嵌套"自由壳"与"有尺寸的自由画布"
+ */
+export type FreeFolderItem = ShellFreeFolderData | CanvasFreeFolderData
+
+/**
+ * 自由标签组容器壳 (Free Shell)
+ * 作用：给标签组施加具体的 坐标 (position) 和 尺寸 (size)
+ */
+export interface ShellFreeFolderData {
+  type: 'free-shell'
+  id: string
+  position: [number, number]
+  size: [number, number]
+  zIndex: number
+  backgroundColor: string
+  data: [TagLeafData]
+}
+
+/**
+ * 有尺寸的画布自由标签组容器 (Free Canvas)
+ * 作用：在自由容器内嵌套一个带位置和大小限制的排版区域
+ */
+export interface CanvasFreeFolderData {
+  type: 'free-canvas'
+  id: string
+  position: [number, number]
+  size: [number, number]
+  zIndex: number
+  backgroundColor: string
+  data: FreeFolderItem[]
+  protected?: boolean
+}
+
+/**
+ * 无尺寸画布自由标签组容器 (Full Free Canvas)
+ * 作用：字面意义上的无尺寸画布，默认填满父空间（如填满 Shell 或上级画布）
+ */
+export interface FullCanvasFreeFolderData {
+  type: 'full-free-canvas'
+  id: string
+  backgroundColor: string
+  data: FreeFolderItem[]
+  protected?: boolean
+}
+
+
+========== $(File) ==========
+
+
+// src/renderer/src/features/layout/stores/useLayout.ts
+import { reactive } from 'vue'
+import type { CanvasTagFolderData } from '../models/PageLayout'
+import { LayoutAction, dispatchAction } from '../logic/layoutActions'
+
+const toRatio = (val: number): CanvasTagFolderData['ratio'] => val as CanvasTagFolderData['ratio']
+
+export const layoutData = reactive<CanvasTagFolderData>({
+  id: 'root-layout',
+  type: 'canvas',
+  direction: 'col',
+  ratio: toRatio(1),
+  data: [
+    {
+      id: 'folder-top-bar',
+      type: 'shell',
+      ratio: toRatio(0.04),
+      data: [
+        {
+          id: 'leaf-top-bar',
+          type: 'singleton',
+          activeTabName: 'MenuBar',
+          tabHeaderPosition: 'none',
+          data: [{ title: '菜单栏', tabName: 'MenuBar' }]
+        }
+      ]
+    },
+    {
+      id: 'folder-main-content',
+      type: 'canvas',
+      direction: 'row',
+      ratio: toRatio(0.93),
+      data: [
+        {
+          id: 'folder-sidebar',
+          type: 'canvas',
+          direction: 'col',
+          ratio: toRatio(0.2),
+          data: [
+            {
+              id: 'shell-activity-bar',
+              type: 'shell',
+              ratio: toRatio(0.12),
+              data: [
+                {
+                  id: 'activity-bar',
+                  type: 'singleton',
+                  activeTabName: 'Activity',
+                  tabHeaderPosition: 'none',
+                  data: [{ title: '活动栏', tabName: 'Activity' }]
+                }
+              ]
+            },
+            {
+              id: 'shell-explorer',
+              type: 'shell',
+              ratio: toRatio(0.88),
+              data: [
+                {
+                  id: 'explorer',
+                  type: 'normal',
+                  activeTabName: 'Explorer',
+                  tabHeaderPosition: 'left',
+                  data: [
+                    { title: '资源管理器', tabName: 'Explorer' },
+                    { title: '搜索', tabName: 'Search' }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          id: 'shell-editor-area',
+          type: 'shell',
+          ratio: toRatio(0.7),
+          data: [
+            {
+              id: 'editor-canvas',
+              type: 'full-free-canvas',
+              backgroundColor: 'rgba(255, 0, 0, 0)',
+              data: [
+                {
+                  id: 'free-win-main',
+                  type: 'free-shell',
+                  position: [30, 30],
+                  size: [500, 400],
+                  zIndex: 1,
+                  backgroundColor: '#252526',
+                  data: [
+                    {
+                      id: 'leaf-editor-1',
+                      type: 'normal',
+                      activeTabName: 'App',
+                      tabHeaderPosition: 'top',
+                      data: [
+                        { title: 'App.vue', tabName: 'App' },
+                        { title: 'TagPanel.vue', tabName: 'TagPanel' }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  id: 'free-win-sub',
+                  type: 'free-shell',
+                  position: [400, 150],
+                  size: [300, 200],
+                  zIndex: 2,
+                  backgroundColor: '#2d2d2d',
+                  data: [
+                    {
+                      id: 'leaf-editor-2',
+                      type: 'normal',
+                      activeTabName: 'Layout',
+                      tabHeaderPosition: 'top',
+                      data: [{ title: 'PageLayout.ts', tabName: 'Layout' }]
+                    }
+                  ]
+                },
+                {
+                  id: 'free-canvas-container',
+                  type: 'free-canvas',
+                  position: [100, 300],
+                  size: [400, 250],
+                  zIndex: 3,
+                  backgroundColor: '#1e1e1e',
+                  data: [
+                    {
+                      id: 'free-shell-in-canvas-1',
+                      type: 'free-shell',
+                      position: [20, 20],
+                      size: [150, 100],
+                      zIndex: 1,
+                      backgroundColor: '#333333',
+                      data: [
+                        {
+                          id: 'leaf-canvas-1',
+                          type: 'normal',
+                          activeTabName: 'Component',
+                          tabHeaderPosition: 'top',
+                          data: [{ title: 'Component.vue', tabName: 'Component' }]
+                        }
+                      ]
+                    },
+                    {
+                      id: 'free-shell-in-canvas-2',
+                      type: 'free-shell',
+                      position: [200, 30],
+                      size: [160, 120],
+                      zIndex: 2,
+                      backgroundColor: '#3c3c3c',
+                      data: [
+                        {
+                          id: 'leaf-canvas-2',
+                          type: 'normal',
+                          activeTabName: 'Utils',
+                          tabHeaderPosition: 'top',
+                          data: [{ title: 'Utils.ts', tabName: 'Utils' }]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  id: 'free-win-floating',
+                  type: 'free-shell',
+                  position: [550, 50],
+                  size: [280, 180],
+                  zIndex: 4,
+                  backgroundColor: '#252526',
+                  data: [
+                    {
+                      id: 'leaf-floating',
+                      type: 'normal',
+                      activeTabName: 'Console',
+                      tabHeaderPosition: 'top',
+                      data: [{ title: '控制台', tabName: 'Console' }]
+                    }
+                  ]
+                },
+                {
+                  id: 'free-shell-preview',
+                  type: 'free-shell',
+                  position: [350, 250],
+                  size: [200, 150],
+                  zIndex: 5,
+                  backgroundColor: '#2d2d2d',
+                  data: [
+                    {
+                      id: 'leaf-preview',
+                      type: 'normal',
+                      activeTabName: 'Preview',
+                      tabHeaderPosition: 'top',
+                      data: [{ title: '预览', tabName: 'Preview' }]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          id: 'folder-right-panel',
+          type: 'canvas',
+          direction: 'col',
+          ratio: toRatio(0.1),
+          data: [
+            {
+              id: 'shell-ai',
+              type: 'shell',
+              ratio: toRatio(1),
+              data: [
+                {
+                  id: 'ai-assistant',
+                  type: 'normal',
+                  activeTabName: 'AiChat',
+                  tabHeaderPosition: 'right',
+                  data: [{ title: 'AI 辅助', tabName: 'AiChat' }]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      id: 'folder-status-bar',
+      type: 'shell',
+      ratio: toRatio(0.03),
+      data: [
+        {
+          id: 'leaf-status-bar',
+          type: 'singleton',
+          activeTabName: 'StatusBar',
+          tabHeaderPosition: 'none',
+          data: [{ title: '状态栏', tabName: 'StatusBar' }]
+        }
+      ]
+    }
+  ]
+})
+
+export const topLayoutData = reactive<CanvasTagFolderData>({
+  id: 'top-root',
+  type: 'canvas',
+  direction: 'col',
+  ratio: toRatio(1),
+  data: [
+    {
+      id: 'top-full-shell',
+      type: 'shell',
+      ratio: toRatio(1),
+      data: [
+        {
+          id: 'top-canvas-container',
+          type: 'full-free-canvas',
+          backgroundColor: 'transparent',
+          data: [
+            {
+              id: 'top-float-win-1',
+              type: 'free-shell',
+              position: [100, 50],
+              size: [350, 250],
+              zIndex: 1,
+              backgroundColor: 'rgba(37, 37, 38, 0.95)',
+              data: [
+                {
+                  id: 'top-leaf-1',
+                  type: 'normal',
+                  activeTabName: 'QuickActions',
+                  tabHeaderPosition: 'top',
+                  data: [
+                    { title: '快速操作', tabName: 'QuickActions' },
+                    { title: '快捷键', tabName: 'Shortcuts' }
+                  ]
+                }
+              ]
+            },
+            {
+              id: 'top-float-win-2',
+              type: 'free-shell',
+              position: [500, 80],
+              size: [400, 300],
+              zIndex: 2,
+              backgroundColor: 'rgba(45, 45, 46, 0.95)',
+              data: [
+                {
+                  id: 'top-leaf-2',
+                  type: 'normal',
+                  activeTabName: 'Notifications',
+                  tabHeaderPosition: 'top',
+                  data: [
+                    { title: '通知中心', tabName: 'Notifications' },
+                    { title: '日志', tabName: 'Logs' }
+                  ]
+                }
+              ]
+            },
+            {
+              id: 'top-float-win-3',
+              type: 'free-shell',
+              position: [920, 120],
+              size: [280, 200],
+              zIndex: 3,
+              backgroundColor: 'rgba(30, 30, 30, 0.95)',
+              data: [
+                {
+                  id: 'top-leaf-3',
+                  type: 'singleton',
+                  activeTabName: 'Clock',
+                  tabHeaderPosition: 'none',
+                  data: [{ title: '时钟', tabName: 'Clock' }]
+                }
+              ]
+            }
+          ],
+          protected: true
+        }
+      ]
+    }
+  ]
+})
+
+const layers = [topLayoutData, layoutData]
+
+export const dispatch = (action: LayoutAction): void => {
+  dispatchAction(layers, action)
+}
+
+
+========== $(File) ==========
+
+
+// src/renderer/src/features/layout/views/FreeFolder.vue
+<script lang="ts">
+// 【重要新增】模块级变量，用于在所有 FreeFolder 实例间共享和递增 z-index
+// 这样无论你点击哪个悬浮窗，都能拿到全局最高的层级
+let globalMaxZIndex = 100
+</script>
+
+<script setup lang="ts">
+import { computed, ref } from 'vue'
+import type {
+  FreeFolderItem,
+  FullCanvasFreeFolderData,
+  ShellFreeFolderData,
+  CanvasFreeFolderData
+} from '../models/PageLayout'
+import TagPanel from './TagPanel.vue'
+
+const props = defineProps<{
+  folderData: FreeFolderItem | FullCanvasFreeFolderData
+}>()
+
+// 用于获取当前组件的 DOM 实例
+const containerRef = ref<HTMLElement | null>(null)
+
+const containerStyle = computed(() => {
+  const item = props.folderData
+  const style: Record<string, string | number> = {
+    backgroundColor: item.backgroundColor || 'var(--color-bg-100)'
+  }
+
+  if (item.type === 'full-free-canvas') {
+    style.width = '100%'
+    style.height = '100%'
+    style.position = 'relative'
+  } else {
+    style.width = `${item.size[0]}px`
+    style.height = `${item.size[1]}px`
+    style.left = `${item.position[0]}px`
+    style.top = `${item.position[1]}px`
+    style.position = 'absolute'
+    style.zIndex = item.zIndex || 1
+  }
+
+  return style
+})
+
+const bringToFront = (): void => {
+  const item = props.folderData
+  if (item.type === 'full-free-canvas') return
+
+  globalMaxZIndex += 1
+  ;(item as ShellFreeFolderData | CanvasFreeFolderData).zIndex = globalMaxZIndex
+}
+
+const startDrag = (e: MouseEvent): void => {
+  const item = props.folderData
+  if (item.type === 'full-free-canvas') return
+
+  e.preventDefault()
+  bringToFront()
+
+  // 【性能优化】在拖拽开始时获取一次父容器尺寸，避免在 onMouseMove 中重复触发回流
+  const parentEl = containerRef.value?.parentElement
+  // 先获取基础宽度（优先父容器，没有则用窗口），然后统一减去 15
+  const baseWidth = parentEl?.clientWidth ?? window.innerWidth
+  const baseHeight = parentEl?.clientHeight ?? window.innerHeight
+  const maxX = baseWidth - 15
+  const maxY = baseHeight - 15
+
+  const startX = e.clientX
+  const startY = e.clientY
+  const initialPosX = item.position[0]
+  const initialPosY = item.position[1]
+
+  const onMouseMove = (moveEvent: MouseEvent): void => {
+    // 计算新位置
+    const nextX = initialPosX + moveEvent.clientX - startX
+    const nextY = initialPosY + moveEvent.clientY - startY
+
+    // 限位逻辑：确保左上角坐标在 [0, Max] 之间
+    // 如果你想让窗口完全不超出右边界，请将 maxX 改为 (maxX - 窗口宽度)
+    item.position[0] = Math.max(0, Math.min(nextX, maxX))
+    item.position[1] = Math.max(0, Math.min(nextY, maxY))
+  }
+
+  const onMouseUp = (): void => {
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+  }
+
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+}
+</script>
+
+<template>
+  <!-- 文件夹容器：根据类型判断是悬浮窗还是全屏画布 -->
+  <div
+    ref="containerRef"
+    class="free-folder-container"
+    :class="{ 'is-floating': folderData.type !== 'full-free-canvas' }"
+    :style="containerStyle"
+    @mousedown.capture="bringToFront"
+  >
+    <!-- 拖拽手柄：仅在悬浮窗模式下显示，用于拖动整个窗口 -->
+    <div
+      v-if="folderData.type !== 'full-free-canvas'"
+      class="free-folder-drag-handle"
+      @mousedown="startDrag"
+    >
+      <div class="drag-indicator"></div>
+    </div>
+
+    <!-- 内容区域：根据类型显示不同内容 -->
+    <div class="free-folder-content">
+      <!-- 如果是叶子节点（free-shell），显示标签面板 -->
+      <template v-if="folderData.type === 'free-shell'">
+        <TagPanel :leaf-data="folderData.data[0]" :folder-id="folderData.id" />
+      </template>
+
+      <!-- 如果是容器节点（canvas），递归渲染子文件夹 -->
+      <template v-else>
+        <FreeFolder v-for="child in folderData.data" :key="child.id" :folder-data="child" />
+      </template>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.free-folder-container {
+  box-sizing: border-box;
+  /* 【关键修改】：变成纵向弹性盒布局 */
+  display: flex;
+  flex-direction: column;
+}
+
+.free-folder-container.is-floating {
+  /* 悬浮窗增加边框和阴影，使其看起来像一个完整的实体窗口 */
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  overflow: hidden; /* 统一裁剪内部内容，圆角才会生效 */
+}
+
+/* 全屏画布不需要外边框和阴影 */
+.free-folder-container:not(.is-floating) {
+  overflow: hidden;
+}
+
+.free-folder-drag-handle {
+  /* 【关键修改】：移除 position: absolute，让它作为普通的 flex 头 */
+  height: 12px;
+  flex-shrink: 0; /* 保证标题栏不被压缩 */
+  background: var(--color-bg-300);
+  border-bottom: 1px solid var(--color-border);
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+.free-folder-drag-handle:active {
+  cursor: grabbing;
+}
+
+.drag-indicator {
+  width: 32px;
+  height: 4px;
+  background: var(--color-text-muted);
+  border-radius: 2px;
+  opacity: 0.6;
+}
+
+.free-folder-content {
+  /* 主体内容占据剩余的所有空间 */
+  flex: 1;
+  width: 100%;
+  position: relative;
+  overflow: hidden;
+}
+</style>
+
+
+========== $(File) ==========
+
+
+// src/renderer/src/features/layout/views/TagFolder.vue
+<script setup lang="ts">
+import { computed } from 'vue'
+import type { TagFolderItem, CanvasTagFolderData } from '../models/PageLayout'
+import TagPanel from './TagPanel.vue'
+import FreeFolder from './FreeFolder.vue'
+
+const props = defineProps<{
+  folderData: TagFolderItem
+}>()
+
+/**
+ * 核心逻辑修复：归一化比例计算
+ * 当子项被删除时，totalRatio 会减小，从而让剩余项的 percentage 自动变大
+ */
+const normalizedChildren = computed(() => {
+  if (props.folderData.type !== 'canvas') return []
+
+  const canvas = props.folderData as CanvasTagFolderData
+  const children = canvas.data
+
+  const totalRatio = children.reduce((sum, c) => sum + (c.ratio || 0), 0)
+
+  return children.map((child) => {
+    const percentage = totalRatio > 0 ? (child.ratio / totalRatio) * 100 : 100 / children.length
+
+    return {
+      rawData: child,
+      style: {
+        flexBasis: `${percentage}%`,
+        [canvas.direction === 'row' ? 'width' : 'height']: `${percentage}%`,
+        [canvas.direction === 'row' ? 'height' : 'width']: '100%'
+      }
+    }
+  })
+})
+</script>
+
+<template>
+  <div
+    v-if="folderData.type === 'canvas'"
+    class="tag-folder-canvas"
+    :class="`is-${folderData.direction}`"
+  >
+    <div
+      v-for="child in normalizedChildren"
+      :key="child.rawData.id"
+      class="tag-folder-item"
+      :style="child.style"
+    >
+      <TagFolder :folder-data="child.rawData" />
+    </div>
+  </div>
+
+  <div v-else-if="folderData.type === 'shell'" class="tag-folder-shell">
+    <template v-if="folderData.data[0].type === 'full-free-canvas'">
+      <FreeFolder :folder-data="folderData.data[0]" />
+    </template>
+    <template v-else>
+      <TagPanel :leaf-data="folderData.data[0]" :folder-id="folderData.id" />
+    </template>
+  </div>
+</template>
+
+<style scoped>
+/* 画布容器，填满分配的空间 */
+.tag-folder-canvas {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* 根据方向排列 */
+.tag-folder-canvas.is-row {
+  flex-direction: row;
+}
+.tag-folder-canvas.is-col {
+  flex-direction: column;
+}
+
+/* 壳容器，确保内部组件（TagPanel 或 FreeFolder）能撑满比例区域 */
+.tag-folder-shell {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  overflow: hidden;
+}
+
+/* 网格项基础样式 */
+.tag-folder-item {
+  display: flex;
+  overflow: hidden;
+  /* 禁止收缩，完全遵循 ratio 分配的 flex-basis */
+  flex-shrink: 0;
+}
+</style>
+
+
+========== $(File) ==========
+
+
+// src/renderer/src/features/layout/views/TagPanel.vue
+<script setup lang="ts">
+import { computed, defineAsyncComponent, toRefs, type Component } from 'vue'
+import type { TagLeafData } from '../models/PageLayout'
+import { dispatch } from '../stores/useLayout'
+
+const props = withDefaults(
+  defineProps<{
+    leafData: TagLeafData
+    folderId: string
+    closable?: boolean
+    width?: number | string
+    height?: number | string
+  }>(),
+  {
+    closable: true,
+    width: '100%',
+    height: '100%'
+  }
+)
+
+const { leafData } = toRefs(props)
+
+const tabSize = computed(() => ({
+  width: typeof props.width === 'number' ? `${props.width}px` : props.width,
+  height: typeof props.height === 'number' ? `${props.height}px` : props.height
+}))
+
+const isSingleton = computed(() => leafData.value.type === 'singleton')
+
+const tabModules = import.meta.glob('../../../views/tabs/*/index.vue', { eager: false })
+
+const activeTag = computed(() => {
+  return (
+    leafData.value.data.find((t) => t.tabName === leafData.value.activeTabName) ||
+    leafData.value.data[0]
+  )
+})
+
+const currentComponent = computed((): Component | null => {
+  if (!activeTag.value) return null
+  const path = `../../../views/tabs/${activeTag.value.tabName}/index.vue`
+  if (tabModules[path]) {
+    return defineAsyncComponent(tabModules[path] as () => Promise<Component>)
+  }
+  return null
+})
+
+const layoutClass = computed(() => {
+  const pos = leafData.value.tabHeaderPosition || 'top'
+  const classes = [`tab--pos-${pos}`]
+  if (isSingleton.value) {
+    classes.push('tab--singleton')
+  }
+  return classes
+})
+
+const switchTab = (tabName: string): void => {
+  dispatch({ type: 'SET_ACTIVE_TAB', id: leafData.value.id, tabName })
+}
+
+const handleClose = (): void => {
+  dispatch({ type: 'CLOSE_FOLDER', id: props.folderId })
+}
+</script>
+
+<template>
+  <div class="tab" :class="layoutClass" :style="tabSize">
+    <div v-if="!isSingleton" class="tab__header">
+      <div class="tab__list scrollbar--ghost">
+        <div
+          v-for="tag in leafData.data"
+          :key="tag.tabName"
+          class="tab__item"
+          :class="{ 'is-active': tag.tabName === leafData.activeTabName }"
+          :title="tag.title"
+          @click="switchTab(tag.tabName)"
+        >
+          {{ tag.title }}
+        </div>
+      </div>
+      <button v-if="props.closable" class="tab__close" type="button" @click="handleClose">
+        <svg class="tab__close-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6.5 6.5L17.5 17.5M17.5 6.5L6.5 17.5" />
+        </svg>
+      </button>
+    </div>
+    <div class="tab__content">
+      <div class="tab__content-safety">
+        <component :is="currentComponent" v-if="currentComponent" />
+        <div v-else class="tab__empty">未找到对应组件: {{ activeTag?.tabName }}</div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.tab {
+  /* ================= 设置中心：颜色变量 ================= */
+  --tab-header-bg: var(--color-bg-300);
+  --tab-body-bg: var(--color-bg-200);
+  --tab-border-color: var(--color-border);
+  --tab-border-color-black: var(--color-border-black);
+  --tab-text-color: var(--color-text);
+
+  /* ======================================================= */
+  --tab-title-size: 13px;
+  --tab-icon-size: calc(var(--tab-title-size) * 1.35);
+
+  display: flex;
+  min-width: 0;
+  background: var(--tab-body-bg);
+  overflow: hidden;
+
+  /* ========================= 元素间距与描边 ========================= */
+  --m-val: 0;
+  margin: calc(var(--m-val) * 1px);
+  border: clamp(0.5px, var(--m-val) * 1000px, 1px) solid var(--tab-border-color);
+
+  /* 覆盖行内宽高的限制，让 flex 自己去计算尺寸 */
+  width: 100% !important;
+  height: 100% !important;
+  flex: 1;
+}
+
+/* --- 1. 布局方向控制 --- */
+.tab--pos-top {
+  flex-direction: column;
+}
+.tab--pos-bottom {
+  flex-direction: column-reverse;
+}
+.tab--pos-left {
+  flex-direction: row;
+}
+.tab--pos-right {
+  flex-direction: row-reverse;
+}
+
+/* --- 2. Header & List 基础尺寸与滚动位置 --- */
+.tab__header {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  background: var(--tab-header-bg);
+  user-select: none;
+  padding: 0;
+}
+.tab--pos-top .tab__header,
+.tab--pos-bottom .tab__header {
+  align-items: center;
+  height: 32px;
+}
+.tab--pos-left .tab__header,
+.tab--pos-right .tab__header {
+  flex-direction: column;
+  width: 32px;
+}
+
+.tab__list {
+  display: flex;
+  flex: 1;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+/* 顶部与底部模式滚动 */
+.tab--pos-top .tab__list,
+.tab--pos-bottom .tab__list {
+  overflow-x: auto;
+  overflow-x: overlay;
+  overflow-y: hidden;
+}
+/* 顶部模式专属翻转 */
+.tab--pos-top .tab__list {
+  transform: scaleY(-1);
+}
+.tab--pos-top .tab__item {
+  transform: scaleY(-1);
+}
+
+/* 左侧与右侧模式滚动 */
+.tab--pos-left .tab__list,
+.tab--pos-right .tab__list {
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-y: overlay;
+  overflow-x: hidden;
+}
+/* 左侧模式专属排版方向 */
+.tab--pos-left .tab__list {
+  direction: rtl;
+}
+.tab--pos-left .tab__item {
+  direction: ltr;
+}
+
+/* --- 3. 分割线内阴影 --- */
+.tab--pos-top .tab__header {
+  box-shadow: inset 0 -1px 0 0 var(--tab-border-color);
+}
+.tab--pos-bottom .tab__header {
+  box-shadow: inset 0 1px 0 0 var(--tab-border-color);
+}
+.tab--pos-left .tab__header {
+  box-shadow: inset -1px 0 0 0 var(--tab-border-color);
+}
+.tab--pos-right .tab__header {
+  box-shadow: inset 1px 0 0 0 var(--tab-border-color);
+}
+
+/* --- 4. 标签项 (tab__item) 样式逻辑 --- */
+.tab__item {
+  position: relative;
+  font-size: var(--tab-title-size);
+  font-weight: 500;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 4px 12px;
+  transition:
+    color 0.2s,
+    background 0.2s;
+  white-space: nowrap;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent; /* 完美保留原版：预留边框占位，防止抖动 */
+}
+
+/* 侧边模式文字旋转 */
+.tab--pos-left .tab__item,
+.tab--pos-right .tab__item {
+  writing-mode: vertical-rl;
+  padding: 12px 4px;
+}
+.tab__item:hover {
+  color: var(--palette-white);
+}
+
+/* A. 激活状态标签 */
+.tab__item.is-active {
+  color: var(--tab-text-color);
+  background: var(--tab-body-bg);
+  border-color: var(--tab-border-color);
+  z-index: 5;
+}
+
+/* B. 非激活状态标签：深色边框*/
+.tab__item:not(.is-active) {
+  border-color: var(--tab-border-color-black);
+  z-index: 1;
+}
+
+/* C. 去除不必要的边框 (保留黑线只在需要的边缘显示) */
+.tab--pos-top .tab__item,
+.tab--pos-bottom .tab__item {
+  border-top: none;
+  border-bottom: none;
+}
+.tab--pos-left .tab__item,
+.tab--pos-right .tab__item {
+  border-left: none;
+  border-right: none;
+}
+
+/* D. 邻居与边缘逻辑：去除多余线条 */
+/* --- 上/下 布局模式 (水平排列) --- */
+.tab--pos-top .tab__item + .tab__item,
+.tab--pos-bottom .tab__item + .tab__item {
+  margin-left: -1px;
+}
+.tab--pos-top .tab__item:first-child,
+.tab--pos-bottom .tab__item:first-child {
+  border-left-color: transparent !important;
+}
+.tab--pos-top .tab__item:not(.is-active):has(+ .is-active),
+.tab--pos-bottom .tab__item:not(.is-active):has(+ .is-active) {
+  border-right-color: transparent;
+}
+.tab--pos-top .is-active + .tab__item:not(.is-active),
+.tab--pos-bottom .is-active + .tab__item:not(.is-active) {
+  border-left-color: transparent;
+}
+
+/* --- 左/右 布局模式 (垂直排列) --- */
+.tab--pos-left .tab__item + .tab__item,
+.tab--pos-right .tab__item + .tab__item {
+  margin-top: -1px;
+}
+.tab--pos-left .tab__item:first-child,
+.tab--pos-right .tab__item:first-child {
+  border-top-color: transparent !important;
+}
+.tab--pos-left .tab__item:not(.is-active):has(+ .is-active),
+.tab--pos-right .tab__item:not(.is-active):has(+ .is-active) {
+  border-bottom-color: transparent;
+}
+.tab--pos-left .is-active + .tab__item:not(.is-active),
+.tab--pos-right .is-active + .tab__item:not(.is-active) {
+  border-top-color: transparent;
+}
+
+/* --- 5. 其他组件样式 --- */
+.tab__content {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  background: var(--tab-body-bg);
+}
+
+.tab__content-safety {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  color: var(--tab-text-color);
+}
+
+.tab__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+.tab--pos-top .tab__close,
+.tab--pos-bottom .tab__close {
+  width: 32px;
+  height: 100%;
+}
+.tab--pos-left .tab__close,
+.tab--pos-right .tab__close {
+  width: 100%;
+  height: 32px;
+}
+.tab__close:hover {
+  color: var(--palette-white);
+}
+
+.tab__close-icon {
+  width: var(--tab-icon-size);
+  height: var(--tab-icon-size);
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  pointer-events: auto;
+  cursor: pointer; /* 确保鼠标悬停时依然显示小手 */
+}
+
+.tab__empty {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100%;
+  color: var(--color-text-muted);
+  text-align: center;
+  padding: 0 10px;
+}
+
+/* ================= 滚动条缝隙修补 (轨道画线法) ================= */
+/* 巧妙利用局部重写：只在滚动条出现时，让透明轨道自带一根封边线 */
+
+/* 1. 水平排列 (Top / Bottom) */
+/* 无论是在顶部还是底部，横向滚动条的物理位置都在内容下方。
+   所以给轨道的“上方 (top)”加一条 1px 的内阴影线，刚好和上方的标签相连。*/
+.tab--pos-top .tab__list::-webkit-scrollbar-track,
+.tab--pos-bottom .tab__list::-webkit-scrollbar-track {
+  /* 使用 inset 内阴影画线，绝对不会影响 4px 的轨道厚度 */
+  box-shadow: inset 0 1px 0 0 var(--tab-border-color-black) !important;
+}
+
+/* 2. 垂直排列：左侧模式 (Left) */
+/* 左侧使用了 direction: rtl，纵向滚动条在左侧，它接触标签的面是“右边缘” */
+.tab--pos-left .tab__list::-webkit-scrollbar-track {
+  box-shadow: inset -1px 0 0 0 var(--tab-border-color-black) !important;
+}
+
+/* 3. 垂直排列：右侧模式 (Right) */
+/* 正常 ltr，纵向滚动条在右侧，它接触标签的面是“左边缘” */
+.tab--pos-right .tab__list::-webkit-scrollbar-track {
+  box-shadow: inset 1px 0 0 0 var(--tab-border-color-black) !important;
+}
+</style>
+
+
+========== $(File) ==========
+
+
+// src/renderer/src/main.ts
+import './assets/main.css'
+
+import { createApp } from 'vue'
+import App from './App.vue'
+
+createApp(App).mount('#app')
+
+
+========== $(File) ==========
+
+
+<!-- src/renderer/src/views/tabs/AiChat/AiMessage.vue -->
+<template>
+  <div class="ai-message">
+    <div class="ai-header">
+      <div class="ai-icon-bg">
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          width="14"
+          height="14"
+        >
+          <rect x="3" y="4" width="18" height="12" rx="2"></rect>
+          <path d="M8 20h8M12 16v4"></path>
+        </svg>
+      </div>
+      <span class="ai-name">Agent name</span>
+    </div>
+
+    <details v-if="thinkContent" class="think-details" open>
+      <summary class="think-summary">
+        <svg
+          class="chevron"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          stroke-width="2"
+          fill="none"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <polyline points="9 18 15 12 9 6"></polyline>
+        </svg>
+        思考过程
+      </summary>
+      <div class="think-content">
+        <template v-for="(block, index) in thinkBlocks" :key="'think-' + index">
+          <CodeBlock v-if="block.type === 'code'" :code="block.content" :lang="block.lang" />
+          <MarkdownBlock v-else :content="block.content" />
+        </template>
+      </div>
+    </details>
+
+    <div class="ai-content">
+      <template v-if="!content && !thinkContent">
+        <span class="loading-dots">正在思考</span>
+      </template>
+      <template v-else>
+        <template v-for="(block, index) in contentBlocks" :key="'content-' + index">
+          <CodeBlock v-if="block.type === 'code'" :code="block.content" :lang="block.lang" />
+          <MarkdownBlock v-else :content="block.content" />
+        </template>
+      </template>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed } from 'vue'
+import { marked } from 'marked'
+import CodeBlock from './MessageBlock/CodeBlock.vue'
+import MarkdownBlock from './MessageBlock/MarkdownBlock.vue'
+
+const props = defineProps<{
+  content: string
+  thinkContent?: string
+}>()
+
+type ContentBlock =
+  | { type: 'code'; content: string; lang: string }
+  | { type: 'markdown'; content: string }
+
+const splitToBlocks = (text: string | undefined): ContentBlock[] => {
+  if (!text) return []
+
+  const tokens = marked.lexer(text)
+  const blocks: ContentBlock[] = []
+  let mdBuffer = ''
+
+  tokens.forEach((token) => {
+    if (token.type === 'code') {
+      if (mdBuffer) {
+        blocks.push({ type: 'markdown', content: mdBuffer })
+        mdBuffer = ''
+      }
+      blocks.push({ type: 'code', content: token.text, lang: token.lang || 'text' })
+    } else {
+      mdBuffer += token.raw
+    }
+  })
+
+  if (mdBuffer) {
+    blocks.push({ type: 'markdown', content: mdBuffer })
+  }
+
+  return blocks
+}
+
+const contentBlocks = computed(() => splitToBlocks(props.content))
+const thinkBlocks = computed(() => splitToBlocks(props.thinkContent))
+</script>
+
+<style scoped>
+.ai-message {
+  align-self: flex-start;
+  width: 100%;
+
+  min-height: 0;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  margin-bottom: 24px;
+}
+
+.ai-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+  color: var(--palette-white);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.ai-icon-bg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: var(--palette-gray-100);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+}
+
+.think-details {
+  margin-bottom: 12px;
+}
+
+.think-summary {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  padding: 4px 8px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  list-style: none;
+  background: var(--color-bg-400);
+  border-radius: 6px;
+  outline: none;
+  cursor: pointer;
+  transition: background 0.2s;
+  user-select: none;
+}
+
+.think-summary:hover {
+  background: var(--palette-gray-500);
+}
+
+.think-summary::-webkit-details-marker {
+  display: none;
+}
+
+.chevron {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.2s ease;
+}
+
+.think-details[open] .chevron {
+  transform: rotate(90deg);
+}
+
+.think-content {
+  margin-top: 8px;
+  padding-left: 12px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  border-left: 2px solid var(--color-bg-600);
+  opacity: 0.7;
+}
+
+.ai-content {
+  color: var(--color-text);
+}
+
+.loading-dots {
+  display: inline-block;
+}
+.loading-dots::after {
+  content: '';
+  animation: dots 1.5s steps(4, end) infinite;
+}
+@keyframes dots {
+  0%,
+  20% {
+    content: '';
+  }
+  40% {
+    content: '.';
+  }
+  60% {
+    content: '..';
+  }
+  80%,
+  100% {
+    content: '...';
+  }
+}
+</style>
+
+
+========== $(File) ==========
+
+
+<!-- src/renderer/src/views/tabs/AiChat/ChatInput.vue -->
+<template>
+  <div class="chat-input-wrapper">
+    <div class="chat-input-box">
+      <div class="input-header">
+        <BotIcon />
+        <span class="header-title">@Builder</span>
+        <ToolIcon class="header-tool" />
+      </div>
+
+      <div class="input-body">
+        <textarea
+          ref="textareaRef"
+          v-model="input"
+          rows="1"
+          class="chat-input-textarea scrollbar"
+          placeholder="您正在与 Builder 聊天"
+          @input="adjustTextareaHeight"
+          @keydown.enter="onEnterKey"
+        ></textarea>
+
+        <div class="toolbar">
+          <div class="toolbar-left">
+            <button class="icon-btn text-icon">@</button>
+            <button class="icon-btn text-icon">#</button>
+          </div>
+          <div class="toolbar-right">
+            <div class="model-selector">
+              <span>GLM-4.7-plan</span>
+              <ChevronDownIcon />
+            </div>
+            <button class="icon-btn">
+              <StarIcon />
+            </button>
+            <button class="icon-btn">
+              <MicrophoneIcon />
+            </button>
+            <button
+              class="send-btn"
+              :class="{ active: !isWaiting && input.trim().length > 0 }"
+              :disabled="isWaiting"
+              @click="handleSend"
+            >
+              <SendIcon />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, nextTick } from 'vue'
+import { BotIcon, ToolIcon, ChevronDownIcon, StarIcon, MicrophoneIcon, SendIcon } from './Svg'
+
+const props = defineProps<{
+  isWaiting: boolean
+}>()
+
+const emit = defineEmits<{
+  (e: 'send', text: string): void
+}>()
+
+const input = ref('')
+const textareaRef = ref<HTMLTextAreaElement | null>(null)
+
+const adjustTextareaHeight = (): void => {
+  if (textareaRef.value) {
+    textareaRef.value.style.height = 'auto'
+    textareaRef.value.style.height = Math.min(textareaRef.value.scrollHeight, 120) + 'px'
+  }
+}
+
+const handleSend = (): void => {
+  const text = input.value.trim()
+  if (!text || props.isWaiting) return
+
+  emit('send', text)
+
+  input.value = ''
+  nextTick(() => {
+    adjustTextareaHeight()
+  })
+}
+
+const onEnterKey = (e: KeyboardEvent): void => {
+  if (props.isWaiting) {
+    if (!e.shiftKey) e.preventDefault()
+    return
+  }
+  if (!e.shiftKey) {
+    e.preventDefault()
+    handleSend()
+  }
+}
+</script>
+
+<style scoped>
+.chat-input-wrapper {
+  flex-shrink: 0;
+  padding: 0 16px 16px;
+
+  /* --- 新增代码 --- */
+  /* 基础宽度占满 */
+  width: 100%;
+
+  /* 与消息列表一致的最大宽度 */
+  max-width: 800px;
+
+  /* 水平居中 */
+  margin: 0 auto;
+
+  /* 确保 padding 不撑大宽度 */
+  box-sizing: border-box;
+}
+
+.chat-input-box {
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-400);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.input-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 14px;
+  color: var(--color-text);
+  font-weight: 500;
+  font-size: 13px;
+  background: var(--color-bg-400);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.header-title {
+  margin-right: auto;
+}
+
+.header-tool {
+  color: var(--color-text-muted);
+}
+
+.input-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px 10px;
+}
+
+textarea {
+  width: 100%;
+  min-height: 24px;
+  max-height: 120px;
+  padding: 0;
+  color: var(--palette-white);
+  font-size: 14px;
+  font-family: inherit;
+  line-height: 1.5;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+}
+
+textarea::placeholder {
+  color: var(--color-text-placeholder);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.toolbar-left,
+.toolbar-right {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--color-text-muted);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.icon-btn:hover {
+  color: var(--color-text);
+  background: var(--color-border);
+}
+
+.text-icon {
+  font-size: 16px;
+  font-family: inherit;
+}
+
+.model-selector {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 4px 8px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.model-selector:hover {
+  color: var(--color-text);
+  background: var(--color-border);
+}
+
+.send-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-left: 2px;
+  color: var(--color-text-placeholder);
+  background: var(--color-border);
+  border: none;
+  border-radius: 6px;
+  cursor: not-allowed;
+  transition: all 0.2s;
+}
+
+.send-btn.active {
+  color: var(--palette-white);
+  background: var(--color-accent);
+  cursor: pointer;
+}
+
+.send-btn.active:hover {
+  background: var(--color-accent-hover);
+}
+
+.send-btn:disabled {
+  cursor: not-allowed;
+}
+</style>
+
+
+========== $(File) ==========
+
+
+<!-- src/renderer/src/views/tabs/AiChat/index.vue -->
+<template>
+  <div class="ai-chat">
+    <MessageList ref="messageListRef" :messages="messages" />
+    <ChatInput :is-waiting="isWaitingForResponse" @send="sendMessage" />
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, nextTick, onMounted } from 'vue'
+import MessageList from './MessageList.vue'
+import ChatInput from './ChatInput.vue'
+
+// 接口命名调整，避免与 Message 组件冲突
+interface ChatMessage {
+  id: number
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  thinkContent?: string
+}
+
+const messageListRef = ref<InstanceType<typeof MessageList> | null>(null)
+const isWaitingForResponse = ref(false)
+
+// 用于存储聊天记录
+const messages = ref<ChatMessage[]>([])
+
+// 滚动条自动到底部
+const scrollToBottom = (): void => {
+  if (messageListRef.value) {
+    messageListRef.value.scrollToBottom()
+  }
+}
+
+const sendMessage = async (text: string): Promise<void> => {
+  if (isWaitingForResponse.value) return
+
+  messages.value.push({
+    id: Date.now(),
+    role: 'user',
+    content: text
+  })
+
+  isWaitingForResponse.value = true
+  nextTick(() => {
+    scrollToBottom()
+  })
+
+  // 将新消息推入数组，并获取它的引用，触发内部组件的更新
+  messages.value.push({
+    id: Date.now() + 1,
+    role: 'assistant',
+    content: '',
+    thinkContent: ''
+  })
+  const currentMsg = messages.value[messages.value.length - 1]
+
+  try {
+    const response = await fetch('http://localhost:5068/api/Llm/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([{ role: 'user', content: text }])
+    })
+
+    if (!response.body) throw new Error('ReadableStream not supported')
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      const chunk = decoder.decode(value, { stream: true })
+      buffer += chunk
+
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (!line.trim()) continue
+        try {
+          const data = JSON.parse(line)
+
+          if (data.reasoning_content) {
+            currentMsg.thinkContent = (currentMsg.thinkContent || '') + data.reasoning_content
+          }
+
+          if (data.content) {
+            currentMsg.content += data.content
+          }
+
+          nextTick(() => scrollToBottom())
+        } catch (e) {
+          console.warn('JSON 解析错误', e)
+        }
+      }
+    }
+  } catch (error) {
+    console.error('请求失败:', error)
+    currentMsg.content += `\n[系统提示]: 连接出错 - ${error}`
+  } finally {
+    isWaitingForResponse.value = false
+    nextTick(() => scrollToBottom())
+  }
+}
+
+interface BackendMessage {
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  reasoning_content?: string
+}
+
+const loadHistory = async (): Promise<void> => {
+  try {
+    const response = await fetch('http://localhost:5068/api/Llm/clone')
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+    const historyData: BackendMessage[] = await response.json()
+
+    // 转换后端数据格式为前端 Message 格式
+    // 后端格式: { role: string, content: string, reasoning_content?: string }
+    messages.value = historyData.map((item, index) => ({
+      id: Date.now() + index,
+      role: item.role,
+      content: item.content || '',
+      thinkContent: item.reasoning_content || ''
+    }))
+
+    nextTick(() => {
+      scrollToBottom()
+    })
+  } catch (error) {
+    console.error('加载历史记录失败:', error)
+  }
+}
+
+onMounted(() => {
+  loadHistory()
+})
+</script>
+
+<style scoped>
+.ai-chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  color: var(--color-text);
+}
+</style>
+
+
+========== $(File) ==========
+
+
+<!-- src/renderer/src/views/tabs/AiChat/MessageBlock/CodeBlock.vue -->
+<template>
+  <div class="code-block-wrapper">
+    <div class="code-block-header">
+      <span class="code-block-lang">{{ lang || 'text' }}</span>
+      <button class="copy-code-btn" :class="{ copied: copied }" @click="copyCode">
+        {{ copied ? 'Copied!' : 'Copy' }}
+      </button>
+    </div>
+    <!-- eslint-disable-next-line vue/no-v-html -->
+    <div class="code-content scrollbar" v-html="highlightedHtml"></div>
+  </div>
+</template>
+
+<script lang="ts">
+import { createHighlighter, type Highlighter } from 'shiki'
+
+// 【添加】这两个变量在所有组件实例间共享
+let sharedHighlighter: Highlighter | null = null
+let highlighterPromise: Promise<Highlighter> | null = null
+</script>
+
+<script setup lang="ts">
+import { ref, watch, onMounted } from 'vue'
+import { type BundledLanguage, type BundledTheme } from 'shiki'
+
+const props = defineProps<{ code: string; lang: string }>()
+const highlightedHtml = ref('')
+const copied = ref(false)
+
+const updateHighlight = async (): Promise<void> => {
+  // 【修改】改为检查全局共享的实例
+  if (!sharedHighlighter) {
+    if (!highlighterPromise) {
+      // 【修改】确保全局只启动一次初始化过程
+      highlighterPromise = createHighlighter({
+        themes: ['one-dark-pro'],
+        langs: [
+          'javascript',
+          'typescript',
+          'vue',
+          'bash',
+          'json',
+          'markdown',
+          'mermaid',
+          'html',
+          'css'
+        ]
+      })
+    }
+    sharedHighlighter = await highlighterPromise
+  }
+
+  const targetLang = (props.lang || 'text') as BundledLanguage
+  const targetTheme: BundledTheme = 'one-dark-pro'
+
+  try {
+    await sharedHighlighter.loadLanguage(targetLang)
+
+    highlightedHtml.value = sharedHighlighter.codeToHtml(props.code, {
+      lang: targetLang,
+      theme: targetTheme
+    })
+  } catch {
+    // 删除了未使用的 e 变量，消除 ESLint 报错
+    const safeCode = props.code.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    highlightedHtml.value = `<pre><code>${safeCode}</code></pre>`
+  }
+}
+
+watch(() => props.code, updateHighlight)
+onMounted(updateHighlight)
+
+const copyCode = (): void => {
+  if (!props.code) return
+  navigator.clipboard
+    .writeText(props.code)
+    .then(() => {
+      copied.value = true
+      setTimeout(() => {
+        copied.value = false
+      }, 2000)
+    })
+    .catch((err) => {
+      console.error('Failed to copy: ', err)
+    })
+}
+</script>
+
+<style scoped>
+.code-block-wrapper {
+  margin: 16px 0;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--color-bg-600);
+  background-color: var(--color-bg-300);
+}
+
+.code-block-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: var(--color-bg-200);
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-bg-600);
+  font-family: 'Fira Code', Consolas, Monaco, monospace;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.code-block-lang {
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.copy-code-btn {
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s;
+  outline: none;
+}
+
+.copy-code-btn:hover {
+  background-color: var(--color-bg-400);
+  color: var(--color-text);
+}
+
+.copy-code-btn.copied {
+  color: var(--palette-accent, #42b883);
+}
+
+.code-content {
+  padding: 16px;
+  overflow-x: auto;
+}
+
+:deep(pre.shiki),
+:deep(pre.shiki span),
+:deep(pre.shiki code) {
+  background-color: transparent !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  font-family: 'Fira Code', monospace !important;
+  font-variant-ligatures: contextual !important;
+  font-feature-settings:
+    'liga' 1,
+    'calt' 1 !important;
+  font-variant-ligatures: contextual;
+  font-feature-settings:
+    'liga' 1,
+    'calt' 1;
+  font-size: 14px !important;
+  line-height: 1.5 !important;
+}
+</style>
+
+
+========== $(File) ==========
+
+
+<!-- src/renderer/src/views/tabs/AiChat/MessageBlock/MarkdownBlock.vue -->
+<template>
+  <!-- 重新加上 markdown-body 类名 -->
+  <!-- eslint-disable-next-line vue/no-v-html -->
+  <div class="markdown-body custom-md" v-html="renderedHtml"></div>
+</template>
+
+<script setup lang="ts">
+import { ref, watch } from 'vue'
+import { marked } from 'marked'
+
+const props = defineProps<{ content: string }>()
+const renderedHtml = ref<string>('')
+
+const updateContent = async (text: string): Promise<void> => {
+  if (!text) {
+    renderedHtml.value = ''
+    return
+  }
+  const result = marked.parse(text)
+  renderedHtml.value = result instanceof Promise ? await result : result
+}
+
+watch(() => props.content, updateContent, { immediate: true })
+</script>
+
+<style scoped>
+/* 1. 容器基础样式 */
+.custom-md {
+  font-size: 14px;
+  line-height: 1.6;
+  color: inherit;
+  word-wrap: break-word;
+}
+
+/* 2. 块级排版元素 (标题、段落、引用、分割线) */
+:deep(h1),
+:deep(h2),
+:deep(h3) {
+  margin-top: 24px;
+  margin-bottom: 16px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+:deep(p) {
+  margin-bottom: 12px;
+}
+:deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+:deep(blockquote) {
+  margin: 0 0 12px 0;
+  padding: 0 1em;
+  color: var(--color-text-muted);
+  border-left: 0.25em solid var(--color-border);
+}
+
+:deep(hr) {
+  height: 1px;
+  margin: 24px 0;
+  background-color: var(--color-border);
+  border: none;
+  opacity: 0.6;
+}
+
+:deep(hr.fancy) {
+  height: 1px;
+  margin: 32px 0;
+  background: linear-gradient(to right, transparent, var(--color-border), transparent);
+  border: none;
+}
+
+/* 3. 列表样式 (合并了重复的选择器) */
+:deep(ul),
+:deep(ol) {
+  padding-left: 2em;
+  margin-bottom: 12px;
+}
+
+:deep(ul) {
+  list-style-type: disc;
+}
+
+:deep(ol) {
+  list-style-type: decimal;
+}
+
+:deep(li li) {
+  margin-top: 0.25em;
+}
+
+/* 4. 表格样式 */
+:deep(table) {
+  width: 100%;
+  margin-bottom: 16px;
+  border-collapse: collapse;
+}
+
+:deep(th),
+:deep(td) {
+  padding: 6px 13px;
+  border: 1px solid var(--color-border);
+}
+
+:deep(tr:nth-child(2n)) {
+  background-color: var(--color-bg-200);
+}
+
+/* 5. 行内元素样式 (链接、加粗、代码) */
+:deep(a) {
+  color: #58a6ff;
+  text-decoration: none;
+}
+:deep(a:hover) {
+  text-decoration: underline;
+}
+
+:deep(strong),
+:deep(b) {
+  font-weight: bold !important;
+  color: var(--color-text-bold, inherit);
+}
+
+:deep(em),
+:deep(i) {
+  font-style: italic;
+}
+
+:deep(code:not(pre code)) {
+  padding: 0.2em 0.4em;
+  margin: 0;
+  font-size: 85%;
+  color: var(--color-text-accent);
+  background-color: var(--color-bg-400);
+  border-radius: 6px;
+}
+</style>
+
+
+========== $(File) ==========
+
+
+<!-- src/renderer/src/views/tabs/AiChat/MessageList.vue -->
+<template>
+  <div class="message-container">
+    <div ref="listRef" class="message-list scrollbar--rail">
+      <div class="message-inner">
+        <template v-for="msg in messages" :key="msg.id">
+          <!-- 用户消息 -->
+          <UserMessage v-if="msg.role === 'user'" :content="msg.content" />
+
+          <!-- AI 消息 -->
+          <AiMessage
+            v-else-if="msg.role === 'assistant'"
+            :content="msg.content"
+            :think-content="msg.thinkContent"
+          />
+        </template>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref } from 'vue'
+import UserMessage from './UserMessage.vue'
+import AiMessage from './AiMessage.vue'
+
+// 定义消息类型
+interface ChatMessage {
+  id: number
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  thinkContent?: string
+}
+
+defineProps<{
+  messages: ChatMessage[]
+}>()
+
+const listRef = ref<HTMLDivElement | null>(null)
+
+// 专门负责滚动的逻辑，暴露给主页面调用
+const scrollToBottom = (): void => {
+  if (listRef.value) {
+    listRef.value.scrollTop = listRef.value.scrollHeight
+  }
+}
+
+// 暴露出 scrollToBottom 方法
+defineExpose({
+  scrollToBottom
+})
+</script>
+
+<style scoped>
+/* 1. 新增的外层容器：负责整体与窗口边缘的隔离 */
+.message-container {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+
+  min-height: 0;
+  min-width: 0;
+
+  /* 这里控制“滚动条距离窗口”的距离 */
+  /* 假设你希望左右各留 8px 的缝隙 */
+  padding: 0 8px;
+  box-sizing: border-box;
+}
+
+.message-list {
+  flex: 1;
+  width: 100%;
+  /* 必须是 auto 或 scroll */
+  overflow-y: auto;
+  overflow-x: hidden;
+
+  min-height: 0;
+  min-width: 0;
+
+  /* Electron (Chromium) 环境下的满分方案 */
+  /* stable: 始终保留轨道位置，防止内容闪烁 */
+  /* both-edges: 左右对称留白，确保 message-inner 绝对居中 */
+  scrollbar-gutter: stable both-edges;
+}
+
+.message-inner {
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 16px;
+  box-sizing: border-box;
+
+  min-height: 0;
+  min-width: 0;
+}
+</style>
+
+
+========== $(File) ==========
+
+
+<template>
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    width="14"
+    height="14"
+  >
+    <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+    <circle cx="8" cy="12" r="1.5" fill="currentColor"></circle>
+    <circle cx="16" cy="12" r="1.5" fill="currentColor"></circle>
+  </svg>
+</template>
+
+
+========== $(File) ==========
+
+
+<template>
+  <svg
+    viewBox="0 0 24 24"
+    stroke="currentColor"
+    stroke-width="2"
+    fill="none"
+    width="14"
+    height="14"
+  >
+    <polyline points="6 9 12 15 18 9"></polyline>
+  </svg>
+</template>
+
+
+========== $(File) ==========
+
+
+// src/renderer/src/views/tabs/AiChat/Svg/index.ts
+
+export { default as BotIcon } from './BotIcon.vue'
+export { default as ChevronDownIcon } from './ChevronDownIcon.vue'
+export { default as MicrophoneIcon } from './MicrophoneIcon.vue'
+export { default as SendIcon } from './SendIcon.vue'
+export { default as StarIcon } from './StarIcon.vue'
+export { default as ToolIcon } from './ToolIcon.vue'
+
+
+========== $(File) ==========
+
+
+<template>
+  <svg
+    viewBox="0 0 24 24"
+    stroke="currentColor"
+    stroke-width="2"
+    fill="none"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    width="16"
+    height="16"
+  >
+    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+    <line x1="12" y1="19" x2="12" y2="23"></line>
+    <line x1="8" y1="23" x2="16" y2="23"></line>
+  </svg>
+</template>
+
+
+========== $(File) ==========
+
+
+<template>
+  <svg
+    viewBox="0 0 24 24"
+    stroke="currentColor"
+    stroke-width="2.5"
+    fill="none"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    width="16"
+    height="16"
+  >
+    <line x1="12" y1="19" x2="12" y2="5"></line>
+    <polyline points="5 12 12 5 19 12"></polyline>
+  </svg>
+</template>
+
+
+========== $(File) ==========
+
+
+<template>
+  <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+    <path d="M12 2l2.4 7.6H22l-6.2 4.6 2.4 7.6-6.2-4.6-6.2 4.6 2.4-7.6L2 9.6h7.6z"></path>
+  </svg>
+</template>
+
+
+========== $(File) ==========
+
+
+<template>
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    width="14"
+    height="14"
+  >
+    <path
+      d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+    ></path>
+  </svg>
+</template>
+
+
+========== $(File) ==========
+
+
+<!-- src/renderer/src/views/tabs/AiChat/UserMessage.vue -->
+<template>
+  <div class="user-message-wrapper">
+    <div class="message-content">{{ content }}</div>
+  </div>
+</template>
+
+<script setup lang="ts">
+defineProps<{
+  content: string
+}>()
+</script>
+
+<style scoped>
+.user-message-wrapper {
+  display: flex;
+  justify-content: flex-end; /* 用户消息靠右 */
+  width: 100%;
+  margin-bottom: 24px;
+}
+
+.message-content {
+  max-width: 85%;
+  padding: 10px 14px;
+  color: var(--color-text);
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: break-word;
+  background: var(--color-bg-400);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}
+</style>
+
+
+然后我现在对项目的想法和预想是这些：
+本质上，AI软件的聊天页面，非常前端非常好做，就是一大堆block，一直在一个列表上面，从上往下的生成就行了。然后用Vue根据数据结构生成，每一个block就是一个Vue，一个block对应一个Vue，然后我直接组建它们就完事了。然后我再对数据结构去处理。关键问题是后端传过来的只是这个，我要把后端传过来的数据结构变成一个，这他妈就是一个前后端约定的问题了呀。就是我后端我要处理这个消息。总而言之，我要传，我总得传给前端的聊天页面，传点什么东西给它。他妈的，我必须得搞清楚聊天页面是用来干嘛的。在IDE中，聊天页面是和AI聊，是和AI交互的入口。但它是唯一入口吗？根据我软件的定义，我软件会有流程图，会有A键头，会有智能体，会有其他的东西，会有IDE，会有编辑器。在很多地方我可以我可以去框选代码或者点击图片去和A箭头去聊天。但是这个聊天页面的面板到底它的作用是什么？我必须得搞清楚它的定位才能知道后端到底给它发什么信息。如果我们先假设一个定位，假设它的定位就是所有AI聊天的终极入口，因为人类不可能同时和多个AI聊天，于是有一个终极入口吗？这，不对，等一下，我仔细想了一下，我要做流程器的话，比如像节点工作流的那种效果的话，那单一输入口是不合适的，因为通常来说，我们很多时候可能说要并行地处理多个A箭头的情况，比如我要在A，第一个A箭头里面输入什么？第二个A箭头里面输入什么？第三个A箭头里面输入什么？对吧？然后再让它们工作起来。等一会，它们并不能算输入，因为它们并不是通用架构。换句话说，那些工作流应该是隐藏在那聊天栏背后的，也就是工作流面板只是我去打开那个A箭头的大脑，编写这个AI是怎么思考的，思考的流程是什么，要调用哪些A箭头。但最终显示的页面应该只有聊天页面。至于内部的中间流程、中间提示词，这应该是在流程图页面里面编辑，但并不能直接运行。一旦运行，它会把最终的流显示到聊天页面上，也就是你不能在流程图里面中间去控制它，流程图一旦写好，你就只能直接运行。如果你在运行时修改它，并不会有任何效果，直到它完成运行之后，它下一次运行才能使用你修改后的流程图，这才是合理的。所以从这个角度来看，聊天页面确实是终极显示页面。那如果它的定义是终极显示页面，那我们就需要一个数据结构来储存。终极显示页面，那我们就需要储存所有可能的聊天消息的结构，比如聊天消息的终极结构是什么样的？那我们想一下，对于聊天页面，无论终极结构是什么，它在页面上显示的都是一个又一个的block块。因为它流式返回或者是某种模式返回，总而言之，它页面上会显示一个又一个的块，也许是思考块，也许是正文块，也许是thinking块，也许是那个代码块，也许是调用工具的Block，也许是调用其他Agent.的Block。这么来说，它本质上是一个数组，这个数组内包含多很多个Message类型，也就是由一个超大的联合类型组成。我们可以在TS里面定义一个超大的联合类型，这个联合类型中允许很多个Message类型，然后这个Message类型，每一个Message类型可能不一样，比如说Code Message，比如说Test Message，又比如说Thinking Message。又比如说Tool Message。然后它们作为联合类型得到一个Message类型。然后构建一个Message数组，就可以自由地在那扩充了。那后端怎么办？前端这样做是为了方便显示。对于后端来说，我们需要的肯定是和大语言模型交互了，也要和API交互。我们需要定义两部分的类型，一部分的类型是关于如何接受API的消息并得到API构造的类型。换句话说，API它可能每个API可能也不一样，也许有通用标准。总而言之，我们需要一个层来储存关于API返回的数据结构。然后我们再写一个兼容的C# 类型，把这个数据结构转化为我们自己内定的另一套数据结构，用来内部进行计算。比如说调用其他的A键呀，比如说注入提示词词啊之类的其他操作。然后再通过兼容层返回给对应的层，然后我的内部层的代码逻辑，也就是业务逻辑并不需要关系API和大语言模型那边调用的时候的中间层的数据结构是什么样的。我有一个通用的大层，无论数据结构是什么样的，从API那边转过来只要确认。它是从API来的，那我们就首先定义它的基类是API LLM的基类，然后接着再细分判断这个类型是其中的哪一种类型？比如他可能是OpenAI架构的某种类型，比如它可能是这个厂商的，那个厂商的。然后最终再一直下来就变成再通过这个兼容层转译成我们这个自己的内部用来处理的类型，然后再去各种计算。然后再实现业务逻辑，并且再传递到前端去，给前端显示。

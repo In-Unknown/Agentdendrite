@@ -1,3 +1,4 @@
+<!-- src/renderer/src/views/tabs/AiChat/MessageBlock/CodeBlock.vue -->
 <template>
   <div class="code-block-wrapper">
     <div class="code-block-header">

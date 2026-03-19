@@ -1,3 +1,4 @@
+<!-- src/renderer/src/views/tabs/AiChat/MessageBlock/MarkdownBlock.vue -->
 <template>
   <!-- 重新加上 markdown-body 类名 -->
   <!-- eslint-disable-next-line vue/no-v-html -->

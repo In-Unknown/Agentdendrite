@@ -1,3 +1,4 @@
+<!-- src/renderer/src/views/tabs/AiChat/UserMessage.vue -->
 <template>
   <div class="user-message-wrapper">
     <div class="message-content">{{ content }}</div>

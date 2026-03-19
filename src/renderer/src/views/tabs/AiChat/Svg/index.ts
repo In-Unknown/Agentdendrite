@@ -1,4 +1,4 @@
-// views/tabs/AiChat/Svg/index.ts
+// src/renderer/src/views/tabs/AiChat/Svg/index.ts
 
 export { default as BotIcon } from './BotIcon.vue'
 export { default as ChevronDownIcon } from './ChevronDownIcon.vue'

@@ -1,3 +1,4 @@
+c:\D\01-Projects\Agentdendrite\TECH_DEBT.md
 # TODO: 重构前端 API 调用方式
 
 当前项目的前端直接在 Vue 组件中 **硬编码 URL** 来请求接口，例如：

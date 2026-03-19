@@ -1,3 +1,4 @@
+<!-- src/renderer/src/views/tabs/AiChat/ChatInput.vue -->
 <template>
   <div class="chat-input-wrapper">
     <div class="chat-input-box">

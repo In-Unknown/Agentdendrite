@@ -1,3 +1,4 @@
+<!-- src/renderer/src/views/tabs/AiChat/index.vue -->
 <template>
   <div class="ai-chat">
     <MessageList ref="messageListRef" :messages="messages" />
