@@ -11,7 +11,7 @@ Content-Type: application/json
 [
   {
     "role": "user",
-    "content": "\u0023\u0023\u0023"
+    "content": "我们之前聊过什么？"
   }
 ]
 

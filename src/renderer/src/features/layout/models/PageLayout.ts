@@ -6,6 +6,15 @@ export type LayoutDirection = 'row' | 'col'
 export type TabHeaderPosition = 'top' | 'bottom' | 'left' | 'right' | 'none'
 export type LeafType = 'normal' | 'placeholder' | 'singleton'
 
+// models/PageLayout.ts
+
+export type BrandedRatio = number & { __brand: '0-1-range' }
+
+export function makeRatio(value: number): BrandedRatio {
+  if (value < 0 || value > 1) throw new RangeError(`ratio must be 0-1, got ${value}`)
+  return value as BrandedRatio
+}
+
 export interface TagData {
   title: string
   tabName: string
@@ -41,7 +50,7 @@ export type TagFolderItem = ShellTagFolderData | CanvasTagFolderData
 export interface ShellTagFolderData {
   type: 'shell'
   id: string
-  ratio: number & { __brand: '0-1-range' }
+  ratio: BrandedRatio
   data: [TagLeafData] | [FullCanvasFreeFolderData]
 }
 
@@ -52,7 +61,7 @@ export interface ShellTagFolderData {
 export interface CanvasTagFolderData {
   type: 'canvas'
   id: string
-  ratio: number & { __brand: '0-1-range' }
+  ratio: BrandedRatio
   direction: LayoutDirection
   data: TagFolderItem[]
   protected?: boolean
@@ -107,4 +116,42 @@ export interface FullCanvasFreeFolderData {
   backgroundColor: string
   data: FreeFolderItem[]
   protected?: boolean
+}
+
+// 新增层的包装类型
+export interface LayoutLayer {
+  id: string
+  root: CanvasTagFolderData | FullCanvasFreeFolderData
+  isDragLayer: boolean
+}
+
+export function shellToFreeShell(
+  node: ShellTagFolderData,
+  position: [number, number],
+  size: [number, number],
+  backgroundColor = '#ffffff'
+): ShellFreeFolderData | null {
+  const leaf = node.data[0]
+  if (!('activeTabName' in leaf)) return null
+  return {
+    type: 'free-shell',
+    id: node.id,
+    position,
+    size,
+    zIndex: 999,
+    backgroundColor,
+    data: [leaf]
+  }
+}
+
+export function freeShellToShell(
+  node: ShellFreeFolderData,
+  ratio: BrandedRatio
+): ShellTagFolderData {
+  return {
+    type: 'shell',
+    id: node.id,
+    ratio,
+    data: node.data
+  }
 }

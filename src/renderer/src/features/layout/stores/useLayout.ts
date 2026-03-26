@@ -1,9 +1,20 @@
 // src/renderer/src/features/layout/stores/useLayout.ts
 import { reactive } from 'vue'
-import type { CanvasTagFolderData } from '../models/PageLayout'
+import type { CanvasTagFolderData, LayoutLayer } from '../models/PageLayout'
 import { LayoutAction, dispatchAction } from '../logic/layoutActions'
 
 const toRatio = (val: number): CanvasTagFolderData['ratio'] => val as CanvasTagFolderData['ratio']
+
+// 【新增：扩展全局 Window 接口】
+declare global {
+  interface Window {
+    __LAYOUT_STORE__: {
+      dispatch: typeof dispatch
+      layoutLayers: typeof layoutLayers
+      makeRatio: (v: number) => number
+    }
+  }
+}
 
 export const layoutData = reactive<CanvasTagFolderData>({
   id: 'root-layout',
@@ -78,7 +89,7 @@ export const layoutData = reactive<CanvasTagFolderData>({
             {
               id: 'editor-canvas',
               type: 'full-free-canvas',
-              backgroundColor: 'rgba(255, 0, 0, 0)',
+              backgroundColor: 'rgba(0, 0, 0, 0)',
               data: [
                 {
                   id: 'free-win-main',
@@ -321,8 +332,29 @@ export const topLayoutData = reactive<CanvasTagFolderData>({
   ]
 })
 
-const layers = [topLayoutData, layoutData]
+export const layoutLayers = reactive<LayoutLayer[]>([
+  {
+    id: 'top-layer',
+    root: topLayoutData,
+    isDragLayer: true // 标记顶层为挂起层
+  },
+  {
+    id: 'main-layer',
+    root: layoutData,
+    isDragLayer: false
+  }
+])
 
 export const dispatch = (action: LayoutAction): void => {
-  dispatchAction(layers, action)
+  dispatchAction(layoutLayers, action)
+}
+
+if (import.meta.env.DEV) {
+  // 既然上面已经声明了类型，这里就不再需要 @ts-ignore 了！
+  window.__LAYOUT_STORE__ = {
+    dispatch,
+    layoutLayers,
+    makeRatio: (v: number) => v
+  }
+  console.log('🛠️ 布局测试 API 已挂载到 window.__LAYOUT_STORE__')
 }

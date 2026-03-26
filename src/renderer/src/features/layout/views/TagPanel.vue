@@ -1,8 +1,10 @@
 // src/renderer/src/features/layout/views/TagPanel.vue
 <script setup lang="ts">
-import { computed, defineAsyncComponent, toRefs, type Component } from 'vue'
+import { computed, defineAsyncComponent, toRefs, type Component, inject } from 'vue'
 import type { TagLeafData } from '../models/PageLayout'
 import { dispatch } from '../stores/useLayout'
+
+const layerId = inject<string>('LAYER_ID')
 
 const props = withDefaults(
   defineProps<{
@@ -56,11 +58,22 @@ const layoutClass = computed(() => {
 })
 
 const switchTab = (tabName: string): void => {
-  dispatch({ type: 'SET_ACTIVE_TAB', id: leafData.value.id, tabName })
+  // 3. 传入自动获取的 layerId
+  dispatch({
+    type: 'SET_ACTIVE_TAB',
+    id: leafData.value.id,
+    tabName,
+    layerId: layerId! // ! 表示完全信任该属性一定存在
+  })
 }
 
 const handleClose = (): void => {
-  dispatch({ type: 'CLOSE_FOLDER', id: props.folderId })
+  // 3. 传入自动获取的 layerId
+  dispatch({
+    type: 'CLOSE_FOLDER',
+    id: props.folderId,
+    layerId: layerId!
+  })
 }
 </script>
 

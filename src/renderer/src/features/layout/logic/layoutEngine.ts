@@ -1,165 +1,176 @@
 // src/renderer/src/features/layout/logic/layoutEngine.ts
-import {
-  TagFolderItem,
-  FreeFolderItem,
-  FullCanvasFreeFolderData,
-  ShellFreeFolderData,
-  TagLeafData
-} from '../models/PageLayout'
+import * as Layout from '../models/PageLayout'
 
-export type TreeNode = TagFolderItem | FreeFolderItem | FullCanvasFreeFolderData | TagLeafData
+export type TreeNode =
+  | Layout.TagFolderItem
+  | Layout.FreeFolderItem
+  | Layout.FullCanvasFreeFolderData
+  | Layout.TagLeafData
+
+export type MovableNode = Layout.ShellTagFolderData | Layout.ShellFreeFolderData
+
+type Visitor = (node: TreeNode, parent: TreeNode[], index: number) => boolean | void
+
+export const walkTree = (
+  treeData: TreeNode[],
+  visitor: Visitor,
+  // 初始调用时，parent 就是 treeData 自身
+  parent: TreeNode[] = treeData
+): boolean => {
+  for (let i = 0; i < treeData.length; i++) {
+    const node = treeData[i]
+
+    // 这里的 parent 正确指向了包含当前 node 的数组
+    if (visitor(node, parent, i) === true) return true
+
+    if ('data' in node && Array.isArray(node.data) && node.data.length > 0) {
+      // 【关键修改】：递归进入子树时，子树的 parent 数组就是 node.data
+      if (walkTree(node.data as TreeNode[], visitor, node.data as TreeNode[])) return true
+    }
+  }
+  return false
+}
+
+const isProtectedContainer = (node: TreeNode): boolean => {
+  return (
+    (node.type === 'canvas' || node.type === 'free-canvas' || node.type === 'full-free-canvas') &&
+    !!node.protected
+  )
+}
+
+const pruneEmptyContainers = (treeData: TreeNode[]): void => {
+  for (let i = treeData.length - 1; i >= 0; i--) {
+    const node = treeData[i]
+    if ('data' in node && Array.isArray(node.data)) {
+      pruneEmptyContainers(node.data as TreeNode[])
+      if (node.data.length === 0 && !isProtectedContainer(node)) {
+        treeData.splice(i, 1)
+      }
+    }
+  }
+}
 
 export const setActiveTabInTree = (
   treeData: TreeNode[],
   targetLeafId: string,
   tabName: string
 ): boolean => {
-  for (const item of treeData) {
-    if (item.type === 'shell' || item.type === 'free-shell') {
-      const content = item.data[0]
-      if ('activeTabName' in content && content.id === targetLeafId) {
-        content.activeTabName = tabName
-        return true
-      }
-      if (!('activeTabName' in content) && content.type === 'full-free-canvas') {
-        if (setActiveTabInTree(content.data as TreeNode[], targetLeafId, tabName)) return true
-      }
+  return walkTree(treeData, (node) => {
+    if ('activeTabName' in node && node.id === targetLeafId) {
+      node.activeTabName = tabName
+      return true
     }
-    if (item.type === 'canvas' || item.type === 'free-canvas' || item.type === 'full-free-canvas') {
-      if (setActiveTabInTree(item.data as TreeNode[], targetLeafId, tabName)) return true
-    }
-  }
-  return false
+  })
 }
 
 export const removeNodeFromTree = (treeData: TreeNode[], targetId: string): boolean => {
-  const index = treeData.findIndex((node) => node.id === targetId)
+  let removed = false
 
-  if (index !== -1) {
-    const node = treeData[index]
+  walkTree(treeData, (node, parent, index) => {
+    if (node.id !== targetId) return
+    if (isProtectedContainer(node)) return true
 
-    if (
-      (node.type === 'canvas' || node.type === 'free-canvas' || node.type === 'full-free-canvas') &&
-      node.protected
-    ) {
-      return false
-    }
-
-    treeData.splice(index, 1)
+    parent!.splice(index, 1)
+    removed = true
     return true
-  }
+  })
 
-  for (let i = 0; i < treeData.length; i++) {
-    const item = treeData[i]
-
-    if (item.type === 'canvas' || item.type === 'free-canvas' || item.type === 'full-free-canvas') {
-      if (removeNodeFromTree(item.data as TreeNode[], targetId)) {
-        if (item.data.length === 0 && !item.protected) {
-          treeData.splice(i, 1)
-        }
-        return true
-      }
-    } else if (item.type === 'shell' || item.type === 'free-shell') {
-      const content = item.data[0]
-      if (!content) continue
-
-      if ('activeTabName' in content && content.id === targetId) {
-        treeData.splice(i, 1)
-        return true
-      } else if ('type' in content && content.type === 'full-free-canvas') {
-        if (removeNodeFromTree(content.data as TreeNode[], targetId)) {
-          if (content.data.length === 0 && !content.protected) {
-            treeData.splice(i, 1)
-          }
-          return true
-        }
-      }
-    }
-  }
-
-  return false
+  if (removed) pruneEmptyContainers(treeData)
+  return removed
 }
 
 export const extractNodeFromTree = (treeData: TreeNode[], targetId: string): TreeNode | null => {
-  const index = treeData.findIndex((item) => item.id === targetId)
-  if (index !== -1) {
-    const item = treeData[index]
+  let extracted: TreeNode | null = null
 
-    if (
-      (item.type === 'canvas' || item.type === 'free-canvas' || item.type === 'full-free-canvas') &&
-      item.protected
-    ) {
-      return null
-    }
-    return treeData.splice(index, 1)[0]
-  }
+  walkTree(treeData, (node, parent, index) => {
+    if (node.id !== targetId) return
+    if (isProtectedContainer(node)) return true
 
-  for (let i = 0; i < treeData.length; i++) {
-    const item = treeData[i]
+    extracted = parent!.splice(index, 1)[0]
+    return true
+  })
 
-    if (item.type === 'canvas' || item.type === 'free-canvas' || item.type === 'full-free-canvas') {
-      const extracted = extractNodeFromTree(item.data as TreeNode[], targetId)
-      if (extracted) {
-        if (item.data.length === 0 && !item.protected) {
-          treeData.splice(i, 1)
-        }
-        return extracted
-      }
-    } else if (item.type === 'shell' || item.type === 'free-shell') {
-      const content = item.data[0]
-      if (!content) continue
-
-      if ('activeTabName' in content && content.id === targetId) {
-        return treeData.splice(i, 1)[0]
-      } else if ('type' in content && content.type === 'full-free-canvas') {
-        const extracted = extractNodeFromTree(content.data as TreeNode[], targetId)
-        if (extracted) {
-          if (content.data.length === 0 && !content.protected) {
-            treeData.splice(i, 1)
-          }
-          return extracted
-        }
-      }
-    }
-  }
-  return null
+  if (extracted) pruneEmptyContainers(treeData)
+  return extracted
 }
 
+/**
+ * 将节点插入目标容器，并根据目标容器的物理法则自动转换节点属性
+ * @param treeData 当前递归的树数据
+ * @param targetContainerId 目标容器 ID
+ * @param nodeToInsert 被移动的节点
+ * @param params 转换所需的物理属性（由调用者计算并提供）
+ */
 export const insertNodeIntoTree = (
   treeData: TreeNode[],
   targetContainerId: string,
-  nodeToInsert: TreeNode,
-  position?: [number, number]
-): boolean => {
-  for (const item of treeData) {
-    if (item.id === targetContainerId) {
-      if (position && (item.type === 'free-canvas' || item.type === 'full-free-canvas')) {
-        const shellNode = nodeToInsert as ShellFreeFolderData
-        if (shellNode.type === 'free-shell') {
-          shellNode.position = position
-        }
-      }
-      if (
-        item.type === 'canvas' ||
-        item.type === 'free-canvas' ||
-        item.type === 'full-free-canvas'
-      ) {
-        ;(item.data as TreeNode[]).push(nodeToInsert)
-      }
-      return true
-    }
-    if (item.type === 'canvas' || item.type === 'free-canvas' || item.type === 'full-free-canvas') {
-      if (insertNodeIntoTree(item.data as TreeNode[], targetContainerId, nodeToInsert, position))
-        return true
-    } else if (item.type === 'shell' || item.type === 'free-shell') {
-      const content = item.data[0]
-      if (content.type === 'full-free-canvas') {
-        if (
-          insertNodeIntoTree(content.data as TreeNode[], targetContainerId, nodeToInsert, position)
-        )
-          return true
-      }
-    }
+  nodeToInsert: MovableNode,
+  params?: {
+    position?: [number, number]
+    size?: [number, number]
+    ratio?: Layout.BrandedRatio
+    zIndex?: number
+    backgroundColor?: string
+    index?: number
   }
-  return false
+): boolean => {
+  return walkTree(treeData, (node) => {
+    // 1. 寻找目标容器
+    if (node.id !== targetContainerId) return
+    if (!('data' in node) || !Array.isArray(node.data)) return
+
+    let finalNode: MovableNode
+
+    // --- A. 目标是自由层容器 ---
+    if (node.type === 'free-canvas' || node.type === 'full-free-canvas') {
+      if (nodeToInsert.type === 'shell') {
+        // 【调用你准备的转换函数】
+        const converted = Layout.shellToFreeShell(
+          nodeToInsert,
+          params?.position ?? [0, 0],
+          params?.size ?? [300, 200],
+          params?.backgroundColor // 这里使用了你函数中的默认参数逻辑
+        )
+        if (!converted) return true // 内部数据不匹配，中止操作
+
+        finalNode = converted
+        // 由于你的 shellToFreeShell 内部硬编码了 zIndex: 999，
+        // 我们可以在这里根据 params 覆盖它，实现“调用者提供”的原则
+        if (params?.zIndex !== undefined) finalNode.zIndex = params.zIndex
+      } else {
+        // 本身就是自由壳，直接应用新参数
+        if (params?.position) nodeToInsert.position = params.position
+        if (params?.size) nodeToInsert.size = params.size
+        if (params?.zIndex !== undefined) nodeToInsert.zIndex = params.zIndex
+        if (params?.backgroundColor) nodeToInsert.backgroundColor = params.backgroundColor
+        finalNode = nodeToInsert
+      }
+    }
+
+    // --- B. 目标是普通网格容器 ---
+    else if (node.type === 'canvas') {
+      if (nodeToInsert.type === 'free-shell') {
+        // 【调用你准备的转换函数】
+        finalNode = Layout.freeShellToShell(nodeToInsert, params?.ratio ?? Layout.makeRatio(0.2))
+      } else {
+        // 本身就是网格壳，直接更新比例
+        if (params?.ratio) nodeToInsert.ratio = params.ratio
+        finalNode = nodeToInsert
+      }
+    } else {
+      return
+    }
+
+    // --- 【核心修改】：实现索引插入 ---
+    const targetArray = node.data as TreeNode[]
+
+    // 如果指定了有效索引则插入到对应位置，否则默认追加到末尾
+    if (params?.index !== undefined && params.index >= 0 && params.index <= targetArray.length) {
+      targetArray.splice(params.index, 0, finalNode)
+    } else {
+      targetArray.push(finalNode)
+    }
+
+    return true
+  })
 }

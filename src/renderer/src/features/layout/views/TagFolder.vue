@@ -15,16 +15,21 @@ const props = defineProps<{
  */
 const normalizedChildren = computed(() => {
   if (props.folderData.type !== 'canvas') return []
-
   const canvas = props.folderData as CanvasTagFolderData
-  const children = canvas.data
 
-  const totalRatio = children.reduce((sum, c) => sum + (c.ratio || 0), 0)
+  const children = canvas.data
+  const DEFAULT_WEIGHT = 0.2
+
+  // 1. 计算总权重
+  const totalWeight = children.reduce((sum, c) => sum + (c.ratio || DEFAULT_WEIGHT), 0)
 
   return children.map((child) => {
-    const percentage = totalRatio > 0 ? (child.ratio / totalRatio) * 100 : 100 / children.length
+    // 2. 计算百分比
+    const r = child.ratio || DEFAULT_WEIGHT
+    const percentage = (r / totalWeight) * 100
 
     return {
+      id: child.id,
       rawData: child,
       style: {
         flexBasis: `${percentage}%`,
@@ -51,13 +56,17 @@ const normalizedChildren = computed(() => {
       <TagFolder :folder-data="child.rawData" />
     </div>
   </div>
-
   <div v-else-if="folderData.type === 'shell'" class="tag-folder-shell">
-    <template v-if="folderData.data[0].type === 'full-free-canvas'">
-      <FreeFolder :folder-data="folderData.data[0]" />
-    </template>
-    <template v-else>
-      <TagPanel :leaf-data="folderData.data[0]" :folder-id="folderData.id" />
+    <template v-if="folderData.data[0]">
+      <!-- 1. 判断是全屏自由画布 -->
+      <template v-if="folderData.data[0].type === 'full-free-canvas'">
+        <FreeFolder :folder-data="folderData.data[0]" />
+      </template>
+
+      <!-- 2. 判断是普通标签页 -->
+      <template v-else>
+        <TagPanel :leaf-data="folderData.data[0] as any" :folder-id="folderData.id" />
+      </template>
     </template>
   </div>
 </template>
