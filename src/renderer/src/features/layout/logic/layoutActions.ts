@@ -16,6 +16,7 @@ export type LayoutAction =
       ratio?: Layout.BrandedRatio
       index?: number
     }
+  | { type: 'DETACH_NODE'; id: string; layerId: string }
 
 export const dispatchAction = (layers: Layout.LayoutLayer[], action: LayoutAction): void => {
   switch (action.type) {

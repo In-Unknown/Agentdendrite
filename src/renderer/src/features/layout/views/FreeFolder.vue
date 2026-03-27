@@ -13,7 +13,7 @@ import type {
   ShellFreeFolderData,
   CanvasFreeFolderData
 } from '../models/PageLayout'
-import TagPanel from './TagPanel.vue'
+import TabPanel from './TabPanel.vue'
 
 const props = defineProps<{
   folderData: FreeFolderItem | FullCanvasFreeFolderData
@@ -115,7 +115,7 @@ const startDrag = (e: MouseEvent): void => {
     <div class="free-folder-content">
       <!-- 如果是叶子节点（free-shell），显示标签面板 -->
       <template v-if="folderData.type === 'free-shell'">
-        <TagPanel :leaf-data="folderData.data[0]" :folder-id="folderData.id" />
+        <TabPanel :leaf-data="folderData.data[0]" :folder-id="folderData.id" />
       </template>
 
       <!-- 如果是容器节点（canvas），递归渲染子文件夹 -->

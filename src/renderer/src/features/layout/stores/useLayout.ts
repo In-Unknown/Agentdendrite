@@ -1,9 +1,9 @@
 // src/renderer/src/features/layout/stores/useLayout.ts
 import { reactive } from 'vue'
-import type { CanvasTagFolderData, LayoutLayer } from '../models/PageLayout'
+import type { CanvasTabFolderData, LayoutLayer } from '../models/PageLayout'
 import { LayoutAction, dispatchAction } from '../logic/layoutActions'
 
-const toRatio = (val: number): CanvasTagFolderData['ratio'] => val as CanvasTagFolderData['ratio']
+const toRatio = (val: number): CanvasTabFolderData['ratio'] => val as CanvasTabFolderData['ratio']
 
 // 【新增：扩展全局 Window 接口】
 declare global {
@@ -16,7 +16,7 @@ declare global {
   }
 }
 
-export const layoutData = reactive<CanvasTagFolderData>({
+export const layoutData = reactive<CanvasTabFolderData>({
   id: 'root-layout',
   type: 'canvas',
   direction: 'col',
@@ -106,7 +106,7 @@ export const layoutData = reactive<CanvasTagFolderData>({
                       tabHeaderPosition: 'top',
                       data: [
                         { title: 'App.vue', tabName: 'App' },
-                        { title: 'TagPanel.vue', tabName: 'TagPanel' }
+                        { title: 'TabPanel.vue', tabName: 'TabPanel' }
                       ]
                     }
                   ]
@@ -251,7 +251,7 @@ export const layoutData = reactive<CanvasTagFolderData>({
   ]
 })
 
-export const topLayoutData = reactive<CanvasTagFolderData>({
+export const topLayoutData = reactive<CanvasTabFolderData>({
   id: 'top-root',
   type: 'canvas',
   direction: 'col',
