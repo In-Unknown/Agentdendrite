@@ -2,12 +2,12 @@
 import * as Layout from '../models/PageLayout'
 
 export type TreeNode =
-  | Layout.TagFolderItem
+  | Layout.TabFolderItem
   | Layout.FreeFolderItem
   | Layout.FullCanvasFreeFolderData
-  | Layout.TagLeafData
+  | Layout.TabLeafData
 
-export type MovableNode = Layout.ShellTagFolderData | Layout.ShellFreeFolderData
+export type MovableNode = Layout.ShellTabFolderData | Layout.ShellFreeFolderData
 
 type Visitor = (node: TreeNode, parent: TreeNode[], index: number) => boolean | void
 

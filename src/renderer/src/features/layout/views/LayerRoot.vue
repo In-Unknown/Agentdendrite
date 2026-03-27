@@ -1,11 +1,11 @@
 <!-- src/renderer/src/features/layout/views/LayerRoot.vue -->
 <script setup lang="ts">
 import { provide } from 'vue'
-import TagFolder from './TagFolder.vue'
+import TabFolder from './TabFolder.vue'
 import FreeFolder from './FreeFolder.vue'
 import type {
   LayoutLayer,
-  CanvasTagFolderData,
+  CanvasTabFolderData,
   FullCanvasFreeFolderData
 } from '../models/PageLayout'
 
@@ -22,7 +22,7 @@ provide('LAYER_ID', props.layer.id)
   <div class="layer-wrapper">
     <!-- 类型分流，解决 TS 报错 -->
     <template v-if="layer.root.type === 'canvas'">
-      <TagFolder :folder-data="layer.root as CanvasTagFolderData" />
+      <TabFolder :folder-data="layer.root as CanvasTabFolderData" />
     </template>
 
     <template v-else-if="layer.root.type === 'full-free-canvas'">

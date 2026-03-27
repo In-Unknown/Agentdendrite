@@ -15,7 +15,7 @@ export function makeRatio(value: number): BrandedRatio {
   return value as BrandedRatio
 }
 
-export interface TagData {
+export interface TabData {
   title: string
   tabName: string
 }
@@ -24,12 +24,12 @@ export interface TagData {
  * 最小单元：标签组叶子数据 (Leaf)
  * 仅包含实际业务标签的数据
  */
-export interface TagLeafData {
+export interface TabLeafData {
   id: string
   type: LeafType
   activeTabName: string
   tabHeaderPosition: TabHeaderPosition
-  data: TagData[]
+  data: TabData[]
 }
 
 // ==========================================================
@@ -37,33 +37,33 @@ export interface TagLeafData {
 // ==========================================================
 
 /**
- * 标签组网格项联合类型 (TagFolderItem)
+ * 标签组网格项联合类型 (TabFolderItem)
  * 允许在网格数组中混装“壳”与“画布”
  */
-export type TagFolderItem = ShellTagFolderData | CanvasTagFolderData
+export type TabFolderItem = ShellTabFolderData | CanvasTabFolderData
 
 /**
  * 标签组容器壳 (Shell)
  * 作用：网格占位符，持有比例 (ratio)。
  * 它的内容是单一的：要么是标签组叶子，要么是无尺寸自由画布。
  */
-export interface ShellTagFolderData {
+export interface ShellTabFolderData {
   type: 'shell'
   id: string
   ratio: BrandedRatio
-  data: [TagLeafData] | [FullCanvasFreeFolderData]
+  data: [TabLeafData] | [FullCanvasFreeFolderData]
 }
 
 /**
  * 画布标签组容器 (Canvas)
  * 作用：管理多个网格项（壳或子画布）的排列方向。
  */
-export interface CanvasTagFolderData {
+export interface CanvasTabFolderData {
   type: 'canvas'
   id: string
   ratio: BrandedRatio
   direction: LayoutDirection
-  data: TagFolderItem[]
+  data: TabFolderItem[]
   protected?: boolean
 }
 
@@ -88,7 +88,7 @@ export interface ShellFreeFolderData {
   size: [number, number]
   zIndex: number
   backgroundColor: string
-  data: [TagLeafData]
+  data: [TabLeafData]
 }
 
 /**
@@ -121,12 +121,12 @@ export interface FullCanvasFreeFolderData {
 // 新增层的包装类型
 export interface LayoutLayer {
   id: string
-  root: CanvasTagFolderData | FullCanvasFreeFolderData
+  root: CanvasTabFolderData | FullCanvasFreeFolderData
   isDragLayer: boolean
 }
 
 export function shellToFreeShell(
-  node: ShellTagFolderData,
+  node: ShellTabFolderData,
   position: [number, number],
   size: [number, number],
   backgroundColor = '#ffffff'
@@ -147,7 +147,7 @@ export function shellToFreeShell(
 export function freeShellToShell(
   node: ShellFreeFolderData,
   ratio: BrandedRatio
-): ShellTagFolderData {
+): ShellTabFolderData {
   return {
     type: 'shell',
     id: node.id,

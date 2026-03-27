@@ -1,14 +1,14 @@
-// src/renderer/src/features/layout/views/TagPanel.vue
+// src/renderer/src/features/layout/views/TabPanel.vue
 <script setup lang="ts">
 import { computed, defineAsyncComponent, toRefs, type Component, inject } from 'vue'
-import type { TagLeafData } from '../models/PageLayout'
+import type { TabLeafData } from '../models/PageLayout'
 import { dispatch } from '../stores/useLayout'
 
 const layerId = inject<string>('LAYER_ID')
 
 const props = withDefaults(
   defineProps<{
-    leafData: TagLeafData
+    leafData: TabLeafData
     folderId: string
     closable?: boolean
     width?: number | string
@@ -32,7 +32,7 @@ const isSingleton = computed(() => leafData.value.type === 'singleton')
 
 const tabModules = import.meta.glob('../../../views/tabs/*/index.vue', { eager: false })
 
-const activeTag = computed(() => {
+const activeTab = computed(() => {
   return (
     leafData.value.data.find((t) => t.tabName === leafData.value.activeTabName) ||
     leafData.value.data[0]
@@ -40,8 +40,8 @@ const activeTag = computed(() => {
 })
 
 const currentComponent = computed((): Component | null => {
-  if (!activeTag.value) return null
-  const path = `../../../views/tabs/${activeTag.value.tabName}/index.vue`
+  if (!activeTab.value) return null
+  const path = `../../../views/tabs/${activeTab.value.tabName}/index.vue`
   if (tabModules[path]) {
     return defineAsyncComponent(tabModules[path] as () => Promise<Component>)
   }
@@ -82,14 +82,14 @@ const handleClose = (): void => {
     <div v-if="!isSingleton" class="tab__header">
       <div class="tab__list scrollbar--ghost">
         <div
-          v-for="tag in leafData.data"
-          :key="tag.tabName"
+          v-for="Tab in leafData.data"
+          :key="Tab.tabName"
           class="tab__item"
-          :class="{ 'is-active': tag.tabName === leafData.activeTabName }"
-          :title="tag.title"
-          @click="switchTab(tag.tabName)"
+          :class="{ 'is-active': Tab.tabName === leafData.activeTabName }"
+          :title="Tab.title"
+          @click="switchTab(Tab.tabName)"
         >
-          {{ tag.title }}
+          {{ Tab.title }}
         </div>
       </div>
       <button v-if="props.closable" class="tab__close" type="button" @click="handleClose">
@@ -101,7 +101,7 @@ const handleClose = (): void => {
     <div class="tab__content">
       <div class="tab__content-safety">
         <component :is="currentComponent" v-if="currentComponent" />
-        <div v-else class="tab__empty">未找到对应组件: {{ activeTag?.tabName }}</div>
+        <div v-else class="tab__empty">未找到对应组件: {{ activeTab?.tabName }}</div>
       </div>
     </div>
   </div>
