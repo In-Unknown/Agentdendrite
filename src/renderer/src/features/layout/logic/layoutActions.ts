@@ -1,6 +1,11 @@
 // src/renderer/src/features/layout/logic/layoutActions.ts
 import * as Layout from '../models/PageLayout'
-import { handleCloseFolder, handleSetActiveTab, handleMoveNode } from './layoutCoordinator'
+import {
+  handleCloseFolder,
+  handleSetActiveTab,
+  handleMoveNode,
+  handleDetachNode
+} from './layoutCoordinator'
 
 export type LayoutAction =
   | { type: 'CLOSE_FOLDER'; id: string; layerId: string } // 必须带上所在层 ID
@@ -16,22 +21,29 @@ export type LayoutAction =
       ratio?: Layout.BrandedRatio
       index?: number
     }
-  | { type: 'DETACH_NODE'; id: string; layerId: string }
+  | {
+      type: 'DETACH_NODE'
+      id: string
+      layerId: string
+      clientX: number
+      clientY: number
+      width: number
+      height: number
+    }
 
-export const dispatchAction = (layers: Layout.LayoutLayer[], action: LayoutAction): void => {
+export const dispatchAction = (state: Layout.WorkspaceState, action: LayoutAction): void => {
   switch (action.type) {
     case 'CLOSE_FOLDER':
-      // 直接调用，不写逻辑
-      handleCloseFolder(layers, action.id, action.layerId)
+      handleCloseFolder(state.layer, action.id, action.layerId)
       break
 
     case 'SET_ACTIVE_TAB':
-      handleSetActiveTab(layers, action.id, action.tabName, action.layerId)
+      handleSetActiveTab(state.layer, action.id, action.tabName, action.layerId)
       break
 
     case 'MOVE_NODE':
       handleMoveNode(
-        layers,
+        state.layer,
         action.id,
         action.targetContainerId,
         action.sourceLayerId,
@@ -43,6 +55,10 @@ export const dispatchAction = (layers: Layout.LayoutLayer[], action: LayoutActio
           index: action.index
         }
       )
+      break
+
+    case 'DETACH_NODE':
+      handleDetachNode(state, action)
       break
   }
 }

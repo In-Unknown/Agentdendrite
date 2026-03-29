@@ -125,6 +125,12 @@ export interface LayoutLayer {
   isDragLayer: boolean
 }
 
+export interface WorkspaceState {
+  id: string
+  layer: LayoutLayer[]
+  draggedIndex: number
+}
+
 export function shellToFreeShell(
   node: ShellTabFolderData,
   position: [number, number],

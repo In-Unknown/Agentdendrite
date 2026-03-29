@@ -60,3 +60,42 @@ export const handleMoveNode = (
   console.warn(`节点 ${nodeId} 不属于可移动类型 (MovableNode)，拒绝操作`)
   return false
 }
+
+export const handleDetachNode = (
+  state: Layout.WorkspaceState,
+  action: {
+    id: string
+    layerId: string
+    clientX: number
+    clientY: number
+    width: number
+    height: number
+  }
+): void => {
+  const targetLayer = state.layer.find((l) => l.isDragLayer)
+  if (!targetLayer) return
+
+  const rootShell = targetLayer.root.data[0]
+  const fullFreeCanvas = rootShell.type === 'shell' ? rootShell.data[0] : null
+
+  if (!fullFreeCanvas || fullFreeCanvas.type !== 'full-free-canvas') {
+    console.error('严重错误：拖拽层内部没有找到 full-free-canvas 容器！')
+    return
+  }
+
+  const success = handleMoveNode(
+    state.layer,
+    action.id,
+    fullFreeCanvas.id,
+    action.layerId,
+    targetLayer.id,
+    {
+      position: [action.clientX, action.clientY],
+      size: [action.width, action.height]
+    }
+  )
+
+  if (success) {
+    state.draggedIndex = fullFreeCanvas.data.length - 1
+  }
+}
