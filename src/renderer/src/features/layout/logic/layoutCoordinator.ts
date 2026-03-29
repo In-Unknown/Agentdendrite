@@ -62,7 +62,7 @@ export const handleMoveNode = (
 }
 
 export const handleDetachNode = (
-  state: Layout.WorkspaceState,
+  state: { workspace: Layout.WorkspaceState; drag: Layout.GlobalDragState },
   action: {
     id: string
     layerId: string
@@ -70,9 +70,10 @@ export const handleDetachNode = (
     clientY: number
     width: number
     height: number
+    dragOffset?: [number, number]
   }
 ): void => {
-  const targetLayer = state.layer.find((l) => l.isDragLayer)
+  const targetLayer = state.workspace.layer.find((l) => l.isDragLayer)
   if (!targetLayer) return
 
   const rootShell = targetLayer.root.data[0]
@@ -83,19 +84,22 @@ export const handleDetachNode = (
     return
   }
 
+  const offset = action.dragOffset || [0, 0]
+
   const success = handleMoveNode(
-    state.layer,
+    state.workspace.layer,
     action.id,
     fullFreeCanvas.id,
     action.layerId,
     targetLayer.id,
     {
-      position: [action.clientX, action.clientY],
+      position: [action.clientX - offset[0], action.clientY - offset[1]],
       size: [action.width, action.height]
     }
   )
 
   if (success) {
-    state.draggedIndex = fullFreeCanvas.data.length - 1
+    state.drag.id = action.id
+    state.drag.dragOffset = offset
   }
 }

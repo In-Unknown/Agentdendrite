@@ -10,11 +10,6 @@ export type LeafType = 'normal' | 'placeholder' | 'singleton'
 
 export type BrandedRatio = number & { __brand: '0-1-range' }
 
-export function makeRatio(value: number): BrandedRatio {
-  if (value < 0 || value > 1) throw new RangeError(`ratio must be 0-1, got ${value}`)
-  return value as BrandedRatio
-}
-
 export interface TabData {
   title: string
   tabName: string
@@ -128,36 +123,9 @@ export interface LayoutLayer {
 export interface WorkspaceState {
   id: string
   layer: LayoutLayer[]
-  draggedIndex: number
 }
 
-export function shellToFreeShell(
-  node: ShellTabFolderData,
-  position: [number, number],
-  size: [number, number],
-  backgroundColor = '#ffffff'
-): ShellFreeFolderData | null {
-  const leaf = node.data[0]
-  if (!('activeTabName' in leaf)) return null
-  return {
-    type: 'free-shell',
-    id: node.id,
-    position,
-    size,
-    zIndex: 999,
-    backgroundColor,
-    data: [leaf]
-  }
-}
-
-export function freeShellToShell(
-  node: ShellFreeFolderData,
-  ratio: BrandedRatio
-): ShellTabFolderData {
-  return {
-    type: 'shell',
-    id: node.id,
-    ratio,
-    data: node.data
-  }
+export interface GlobalDragState {
+  id: string | null
+  dragOffset: [number, number]
 }
