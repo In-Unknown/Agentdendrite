@@ -1,6 +1,6 @@
 // src/renderer/src/features/layout/stores/useLayout.ts
 import { reactive } from 'vue'
-import type { CanvasTabFolderData, LayoutLayer } from '../models/PageLayout'
+import type { CanvasTabFolderData, LayoutLayer, WorkspaceState } from '../models/PageLayout'
 import { LayoutAction, dispatchAction } from '../logic/layoutActions'
 
 const toRatio = (val: number): CanvasTabFolderData['ratio'] => val as CanvasTabFolderData['ratio']
@@ -11,6 +11,7 @@ declare global {
     __LAYOUT_STORE__: {
       dispatch: typeof dispatch
       layoutLayers: typeof layoutLayers
+      workspaceState: typeof workspaceState
       makeRatio: (v: number) => number
     }
   }
@@ -345,15 +346,21 @@ export const layoutLayers = reactive<LayoutLayer[]>([
   }
 ])
 
+export const workspaceState = reactive<WorkspaceState>({
+  id: 'main-workspace',
+  layer: layoutLayers,
+  draggedIndex: -1
+})
+
 export const dispatch = (action: LayoutAction): void => {
-  dispatchAction(layoutLayers, action)
+  dispatchAction(workspaceState, action)
 }
 
 if (import.meta.env.DEV) {
-  // 既然上面已经声明了类型，这里就不再需要 @ts-ignore 了！
   window.__LAYOUT_STORE__ = {
     dispatch,
     layoutLayers,
+    workspaceState,
     makeRatio: (v: number) => v
   }
   console.log('🛠️ 布局测试 API 已挂载到 window.__LAYOUT_STORE__')

@@ -1,17 +1,47 @@
 <!-- src/renderer/src/features/layout/views/LayoutWorkspace.vue -->
 <script setup lang="ts">
+import { onMounted, onUnmounted } from 'vue'
 import LayerRoot from './LayerRoot.vue'
-import { layoutLayers } from '../stores/useLayout'
+import { workspaceState } from '../stores/useLayout'
+
+const handleGlobalMouseMove = (e: MouseEvent): void => {
+  if (workspaceState.draggedIndex !== -1) {
+    const dragLayer = workspaceState.layer.find((l) => l.isDragLayer)
+    const rootShell = dragLayer?.root.data[0]
+    const fullFreeCanvas = rootShell?.type === 'shell' ? rootShell.data[0] : null
+    const node =
+      fullFreeCanvas?.type === 'full-free-canvas'
+        ? fullFreeCanvas.data[workspaceState.draggedIndex]
+        : null
+
+    if (node && 'position' in node) {
+      node.position = [e.clientX, e.clientY]
+    }
+  }
+}
+
+const handleGlobalMouseUp = (): void => {
+  workspaceState.draggedIndex = -1
+}
+
+onMounted(() => {
+  window.addEventListener('mousemove', handleGlobalMouseMove)
+  window.addEventListener('mouseup', handleGlobalMouseUp)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('mousemove', handleGlobalMouseMove)
+  window.removeEventListener('mouseup', handleGlobalMouseUp)
+})
 </script>
 
 <template>
   <div class="stack-wrapper">
-    <!-- 父组件直接向下发号施令，通过 class 决定它是底座还是浮层 -->
     <LayerRoot
-      v-for="layer in layoutLayers"
-      :key="layer.id"
-      :layer="layer"
-      :class="layer.isDragLayer ? 'layer-overlay' : 'layer-base'"
+      v-for="l in workspaceState.layer"
+      :key="l.id"
+      :layer="l"
+      :class="l.isDragLayer ? 'layer-overlay' : 'layer-base'"
     />
   </div>
 </template>
