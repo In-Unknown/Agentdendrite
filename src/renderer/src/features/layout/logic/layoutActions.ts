@@ -29,21 +29,25 @@ export type LayoutAction =
       clientY: number
       width: number
       height: number
+      dragOffset?: [number, number]
     }
 
-export const dispatchAction = (state: Layout.WorkspaceState, action: LayoutAction): void => {
+export const dispatchAction = (
+  state: { workspace: Layout.WorkspaceState; drag: Layout.GlobalDragState },
+  action: LayoutAction
+): void => {
   switch (action.type) {
     case 'CLOSE_FOLDER':
-      handleCloseFolder(state.layer, action.id, action.layerId)
+      handleCloseFolder(state.workspace.layer, action.id, action.layerId)
       break
 
     case 'SET_ACTIVE_TAB':
-      handleSetActiveTab(state.layer, action.id, action.tabName, action.layerId)
+      handleSetActiveTab(state.workspace.layer, action.id, action.tabName, action.layerId)
       break
 
     case 'MOVE_NODE':
       handleMoveNode(
-        state.layer,
+        state.workspace.layer,
         action.id,
         action.targetContainerId,
         action.sourceLayerId,

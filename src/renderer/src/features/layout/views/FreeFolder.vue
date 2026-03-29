@@ -6,13 +6,14 @@ let globalMaxZIndex = 100
 </script>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import type {
   FreeFolderItem,
   FullCanvasFreeFolderData,
   ShellFreeFolderData,
   CanvasFreeFolderData
 } from '../models/PageLayout'
+import { globalDragState } from '../stores/useLayout'
 import TabPanel from './TabPanel.vue'
 
 const props = defineProps<{
@@ -52,45 +53,64 @@ const bringToFront = (): void => {
   ;(item as ShellFreeFolderData | CanvasFreeFolderData).zIndex = globalMaxZIndex
 }
 
-const startDrag = (e: MouseEvent): void => {
+let cleanupDrag = (): void => {}
+
+const startDragTracking = (offsetX: number, offsetY: number): void => {
   const item = props.folderData
   if (item.type === 'full-free-canvas') return
 
-  e.preventDefault()
-  bringToFront()
-
-  // 【性能优化】在拖拽开始时获取一次父容器尺寸，避免在 onMouseMove 中重复触发回流
   const parentEl = containerRef.value?.parentElement
-  // 先获取基础宽度（优先父容器，没有则用窗口），然后统一减去 15
   const baseWidth = parentEl?.clientWidth ?? window.innerWidth
   const baseHeight = parentEl?.clientHeight ?? window.innerHeight
   const maxX = baseWidth - 15
   const maxY = baseHeight - 15
 
-  const startX = e.clientX
-  const startY = e.clientY
-  const initialPosX = item.position[0]
-  const initialPosY = item.position[1]
-
-  const onMouseMove = (moveEvent: MouseEvent): void => {
-    // 计算新位置
-    const nextX = initialPosX + moveEvent.clientX - startX
-    const nextY = initialPosY + moveEvent.clientY - startY
-
-    // 限位逻辑：确保左上角坐标在 [0, Max] 之间
-    // 如果你想让窗口完全不超出右边界，请将 maxX 改为 (maxX - 窗口宽度)
+  const onMouseMove = (e: MouseEvent): void => {
+    const nextX = e.clientX - offsetX
+    const nextY = e.clientY - offsetY
     item.position[0] = Math.max(0, Math.min(nextX, maxX))
     item.position[1] = Math.max(0, Math.min(nextY, maxY))
   }
 
   const onMouseUp = (): void => {
-    document.removeEventListener('mousemove', onMouseMove)
-    document.removeEventListener('mouseup', onMouseUp)
+    stopDragTracking()
   }
 
   document.addEventListener('mousemove', onMouseMove)
   document.addEventListener('mouseup', onMouseUp)
+
+  cleanupDrag = () => {
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+    if (globalDragState.id === item.id) globalDragState.id = null
+  }
 }
+
+const stopDragTracking = (): void => {
+  cleanupDrag()
+}
+
+const startManualDrag = (e: MouseEvent): void => {
+  const item = props.folderData
+  if (item.type === 'full-free-canvas') return
+  e.preventDefault()
+  bringToFront()
+  const offsetX = e.clientX - item.position[0]
+  const offsetY = e.clientY - item.position[1]
+  startDragTracking(offsetX, offsetY)
+}
+
+onMounted(() => {
+  const item = props.folderData
+  if (item.type !== 'full-free-canvas' && globalDragState.id === item.id) {
+    bringToFront()
+    startDragTracking(globalDragState.dragOffset[0], globalDragState.dragOffset[1])
+  }
+})
+
+onUnmounted(() => {
+  stopDragTracking()
+})
 </script>
 
 <template>
@@ -106,7 +126,7 @@ const startDrag = (e: MouseEvent): void => {
     <div
       v-if="folderData.type !== 'full-free-canvas'"
       class="free-folder-drag-handle"
-      @mousedown="startDrag"
+      @mousedown="startManualDrag"
     >
       <div class="drag-indicator"></div>
     </div>

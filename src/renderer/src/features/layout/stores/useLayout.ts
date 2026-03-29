@@ -1,6 +1,12 @@
 // src/renderer/src/features/layout/stores/useLayout.ts
 import { reactive } from 'vue'
-import type { CanvasTabFolderData, LayoutLayer, WorkspaceState } from '../models/PageLayout'
+import type {
+  CanvasTabFolderData,
+  LayoutLayer,
+  WorkspaceState,
+  GlobalDragState
+} from '../models/PageLayout'
+import { makeRatio } from '../models/LayoutUtils'
 import { LayoutAction, dispatchAction } from '../logic/layoutActions'
 
 const toRatio = (val: number): CanvasTabFolderData['ratio'] => val as CanvasTabFolderData['ratio']
@@ -12,6 +18,7 @@ declare global {
       dispatch: typeof dispatch
       layoutLayers: typeof layoutLayers
       workspaceState: typeof workspaceState
+      globalDragState: typeof globalDragState
       makeRatio: (v: number) => number
     }
   }
@@ -348,12 +355,16 @@ export const layoutLayers = reactive<LayoutLayer[]>([
 
 export const workspaceState = reactive<WorkspaceState>({
   id: 'main-workspace',
-  layer: layoutLayers,
-  draggedIndex: -1
+  layer: layoutLayers
+})
+
+export const globalDragState = reactive<GlobalDragState>({
+  id: null,
+  dragOffset: [0, 0]
 })
 
 export const dispatch = (action: LayoutAction): void => {
-  dispatchAction(workspaceState, action)
+  dispatchAction({ workspace: workspaceState, drag: globalDragState }, action)
 }
 
 if (import.meta.env.DEV) {
@@ -361,7 +372,8 @@ if (import.meta.env.DEV) {
     dispatch,
     layoutLayers,
     workspaceState,
-    makeRatio: (v: number) => v
+    globalDragState,
+    makeRatio
   }
   console.log('🛠️ 布局测试 API 已挂载到 window.__LAYOUT_STORE__')
 }

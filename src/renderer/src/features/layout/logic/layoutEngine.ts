@@ -1,5 +1,6 @@
 // src/renderer/src/features/layout/logic/layoutEngine.ts
 import * as Layout from '../models/PageLayout'
+import * as LayoutUtils from '../models/LayoutUtils'
 
 export type TreeNode =
   | Layout.TabFolderItem
@@ -125,7 +126,7 @@ export const insertNodeIntoTree = (
     if (node.type === 'free-canvas' || node.type === 'full-free-canvas') {
       if (nodeToInsert.type === 'shell') {
         // 【调用你准备的转换函数】
-        const converted = Layout.shellToFreeShell(
+        const converted = LayoutUtils.shellToFreeShell(
           nodeToInsert,
           params?.position ?? [0, 0],
           params?.size ?? [300, 200],
@@ -151,7 +152,10 @@ export const insertNodeIntoTree = (
     else if (node.type === 'canvas') {
       if (nodeToInsert.type === 'free-shell') {
         // 【调用你准备的转换函数】
-        finalNode = Layout.freeShellToShell(nodeToInsert, params?.ratio ?? Layout.makeRatio(0.2))
+        finalNode = LayoutUtils.freeShellToShell(
+          nodeToInsert,
+          params?.ratio ?? LayoutUtils.makeRatio(0.2)
+        )
       } else {
         // 本身就是网格壳，直接更新比例
         if (params?.ratio) nodeToInsert.ratio = params.ratio
