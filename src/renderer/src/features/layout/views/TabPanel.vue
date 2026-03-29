@@ -1,6 +1,6 @@
 // src/renderer/src/features/layout/views/TabPanel.vue
 <script setup lang="ts">
-import { computed, defineAsyncComponent, toRefs, type Component, inject } from 'vue'
+import { computed, defineAsyncComponent, toRefs, type Component, inject, ref } from 'vue'
 import type { TabLeafData } from '../models/PageLayout'
 import { dispatch } from '../stores/useLayout'
 
@@ -75,11 +75,72 @@ const handleClose = (): void => {
     layerId: layerId!
   })
 }
+
+const tabRef = ref<HTMLElement | null>(null)
+let isDragging = false
+let startX = 0
+let startY = 0
+let hasStartedDragging = false
+
+const handleMouseDown = (e: MouseEvent): void => {
+  const target = e.target as HTMLElement
+
+  if (target.closest('.tab__item') || target.closest('.tab__close')) {
+    return
+  }
+
+  isDragging = true
+  startX = e.clientX
+  startY = e.clientY
+  hasStartedDragging = false
+
+  document.addEventListener('mousemove', handleMouseMove)
+  document.addEventListener('mouseup', handleMouseUp)
+}
+
+const handleMouseMove = (e: MouseEvent): void => {
+  if (!isDragging) return
+
+  const deltaX = Math.abs(e.clientX - startX)
+  const deltaY = Math.abs(e.clientY - startY)
+  const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY)
+
+  if (!hasStartedDragging && distance > 3) {
+    hasStartedDragging = true
+
+    if (tabRef.value) {
+      const rect = tabRef.value.getBoundingClientRect()
+      const dragOffset: [number, number] = [startX - rect.left, startY - rect.top]
+
+      dispatch({
+        type: 'DETACH_NODE',
+        id: props.folderId,
+        layerId: layerId!,
+        clientX: startX,
+        clientY: startY,
+        width: rect.width,
+        height: rect.height,
+        dragOffset
+      })
+    }
+
+    isDragging = false
+    document.removeEventListener('mousemove', handleMouseMove)
+    document.removeEventListener('mouseup', handleMouseUp)
+  }
+}
+
+const handleMouseUp = (): void => {
+  isDragging = false
+  hasStartedDragging = false
+  document.removeEventListener('mousemove', handleMouseMove)
+  document.removeEventListener('mouseup', handleMouseUp)
+}
 </script>
 
 <template>
-  <div class="tab" :class="layoutClass" :style="tabSize">
-    <div v-if="!isSingleton" class="tab__header">
+  <div ref="tabRef" class="tab" :class="layoutClass" :style="tabSize">
+    <div v-if="!isSingleton" class="tab__header" @mousedown="handleMouseDown">
       <div class="tab__list scrollbar--ghost">
         <div
           v-for="Tab in leafData.data"
