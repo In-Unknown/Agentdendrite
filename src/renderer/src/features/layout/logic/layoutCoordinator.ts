@@ -73,6 +73,13 @@ export const handleDetachNode = (
     dragOffset?: [number, number]
   }
 ): void => {
+  const sourceLayer = state.workspace.layer.find((l) => l.id === action.layerId)
+
+  if (sourceLayer?.isDragLayer) {
+    console.warn(`节点 ${action.id} 已经在自由层，不允许再次分离`)
+    return
+  }
+
   const targetLayer = state.workspace.layer.find((l) => l.isDragLayer)
   if (!targetLayer) return
 
