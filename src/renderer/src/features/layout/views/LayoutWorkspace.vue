@@ -1,11 +1,13 @@
 <!-- src/renderer/src/features/layout/views/LayoutWorkspace.vue -->
 <script setup lang="ts">
 import LayerRoot from './LayerRoot.vue'
+import DropIndicator from './DropIndicator.vue'
 import { workspaceState } from '../stores/useLayout'
 </script>
 
 <template>
   <div class="stack-wrapper">
+    <DropIndicator />
     <LayerRoot
       v-for="l in workspaceState.layer"
       :key="l.id"
@@ -39,7 +41,7 @@ import { workspaceState } from '../stores/useLayout'
 }
 
 .layer-overlay {
-  z-index: 2;
+  z-index: 3;
   pointer-events: none; /* 让顶层透明，鼠标直接点到底层 */
 }
 
