@@ -5,7 +5,7 @@ using System.Text.Json;
 
 namespace AgentdendriteServer.Utils;
 
-public class JsonlStore
+public class JsonlStore : IDisposable
 {
   // 用于流式写入的共享写入器（注意：此服务为 Scoped，每个请求独立，故安全）
   private StreamWriter? _currentWriter;
@@ -18,7 +18,9 @@ public class JsonlStore
     if (!File.Exists(fullPath))
       return result;
 
-    using var reader = new StreamReader(fullPath);
+    using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+    using var reader = new StreamReader(stream, Encoding.UTF8);
+
     string? line;
     while ((line = await reader.ReadLineAsync()) != null)
     {
@@ -115,5 +117,11 @@ public class JsonlStore
       _currentWriter = null;
       Debug.WriteLine("JsonLineSave(stream): Closed file.");
     }
+  }
+
+  public void Dispose()
+  {
+    _currentWriter?.Dispose();
+    _currentWriter = null;
   }
 }
