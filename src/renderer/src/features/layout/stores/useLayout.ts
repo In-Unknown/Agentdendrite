@@ -19,6 +19,7 @@ declare global {
       layoutLayers: typeof layoutLayers
       workspaceState: typeof workspaceState
       globalDragState: typeof globalDragState
+      dropPreview: typeof dropPreview
       makeRatio: (v: number) => number
     }
   }
@@ -363,6 +364,15 @@ export const globalDragState = reactive<GlobalDragState>({
   dragOffset: [0, 0]
 })
 
+export const dropPreview = reactive({
+  visible: false,
+  type: 'gap' as 'gap' | 'block',
+  x: 0,
+  y: 0,
+  width: 0,
+  height: 0
+})
+
 export const dispatch = (action: LayoutAction): void => {
   dispatchAction({ workspace: workspaceState, drag: globalDragState }, action)
 }
@@ -373,6 +383,7 @@ if (import.meta.env.DEV) {
     layoutLayers,
     workspaceState,
     globalDragState,
+    dropPreview,
     makeRatio
   }
   console.log('🛠️ 布局测试 API 已挂载到 window.__LAYOUT_STORE__')
