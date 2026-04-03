@@ -2,6 +2,7 @@
 import { type Ref } from 'vue'
 import * as Engine from './layoutEngine'
 import * as Layout from '../models/PageLayout'
+import * as LayoutUtils from '../models/LayoutUtils'
 
 // 1. 精准关闭：根据 layerId 定位层，只在那棵树里删
 export const handleCloseFolder = (
@@ -110,6 +111,96 @@ export const handleDetachShell = (
     state.drag.value = {
       operationType: 'extract-shell',
       id: action.id,
+      dragOffset: offset
+    }
+  }
+}
+
+export const handleDetachTab = (
+  state: { workspace: Layout.WorkspaceState; drag: Ref<Layout.ExtractOperation | null> },
+  action: {
+    id: string
+    tabName: string
+    layerId: string
+    clientX: number
+    clientY: number
+    width: number
+    height: number
+    dragOffset?: [number, number]
+  }
+): void => {
+  const sourceLayer = state.workspace.layer.find((l) => l.id === action.layerId)
+
+  if (!sourceLayer) {
+    console.error(`未找到 ID 为 ${action.layerId} 的源图层`)
+    return
+  }
+
+  if (sourceLayer.isDragLayer) {
+    console.warn(`标签 ${action.tabName} 已经在自由层，不允许再次分离`)
+    return
+  }
+
+  const targetLayer = state.workspace.layer.find((l) => l.isDragLayer)
+  if (!targetLayer) return
+
+  const rootShell = targetLayer.root.data[0]
+  const fullFreeCanvas = rootShell.type === 'shell' ? rootShell.data[0] : null
+
+  if (!fullFreeCanvas || fullFreeCanvas.type !== 'full-free-canvas') {
+    console.error('严重错误：拖拽层内部没有找到 full-free-canvas 容器！')
+    return
+  }
+
+  let targetLeaf: Layout.TabLeafData | null = null
+
+  Engine.walkTree([sourceLayer.root], (node) => {
+    if ('activeTabName' in node && node.id === action.id) {
+      targetLeaf = node as Layout.TabLeafData
+      return true
+    }
+  })
+
+  if (!targetLeaf) {
+    console.error(`未找到 ID 为 ${action.id} 的标签叶子节点`)
+    return
+  }
+
+  const extractResult = Engine.extractTabFromLeaf(targetLeaf, action.tabName)
+  if (!extractResult) {
+    console.warn(`无法从叶子节点 ${action.id} 中提取标签 ${action.tabName}（可能只剩一个标签）`)
+    return
+  }
+
+  const { extractedLeaf } = extractResult
+
+  const newShellId = `shell-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`
+  const newLeafId = `leaf-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`
+
+  const newLeaf: Layout.TabLeafData = {
+    ...extractedLeaf,
+    id: newLeafId
+  }
+
+  const newShell: Layout.ShellTabFolderData = {
+    type: 'shell',
+    id: newShellId,
+    ratio: LayoutUtils.makeRatio(0.2),
+    data: [newLeaf]
+  }
+
+  const offset = action.dragOffset || [0, 0]
+
+  const success = Engine.insertNodeIntoTree([targetLayer.root], fullFreeCanvas.id, newShell, {
+    position: [action.clientX - offset[0], action.clientY - offset[1]],
+    size: [action.width, action.height]
+  })
+
+  if (success) {
+    state.drag.value = {
+      operationType: 'extract-tab',
+      id: newShellId,
+      tabName: action.tabName,
       dragOffset: offset
     }
   }

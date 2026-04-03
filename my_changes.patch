@@ -1,0 +1,299 @@
+diff --git a/src/renderer/src/features/layout/logic/layoutActions.ts b/src/renderer/src/features/layout/logic/layoutActions.ts
+index 35e88a1..6447a89 100644
+--- a/src/renderer/src/features/layout/logic/layoutActions.ts
++++ b/src/renderer/src/features/layout/logic/layoutActions.ts
+@@ -5,7 +5,8 @@ import {
+   handleCloseFolder,
+   handleSetActiveTab,
+   handleMoveNode,
+-  handleDetachShell
++  handleDetachShell,
++  handleDetachTab
+ } from './layoutCoordinator'
+ 
+ export type LayoutAction =
+@@ -32,6 +33,17 @@ export type LayoutAction =
+       height: number
+       dragOffset?: [number, number]
+     }
++  | {
++      type: 'DETACH_TAB'
++      id: string
++      tabName: string
++      layerId: string
++      clientX: number
++      clientY: number
++      width: number
++      height: number
++      dragOffset?: [number, number]
++    }
+ 
+ export const dispatchAction = (
+   state: { workspace: Layout.WorkspaceState; drag: Ref<Layout.ExtractOperation | null> },
+@@ -65,5 +77,9 @@ export const dispatchAction = (
+     case 'DETACH_SHELL':
+       handleDetachShell(state, action)
+       break
++
++    case 'DETACH_TAB':
++      handleDetachTab(state, action)
++      break
+   }
+ }
+diff --git a/src/renderer/src/features/layout/logic/layoutCoordinator.ts b/src/renderer/src/features/layout/logic/layoutCoordinator.ts
+index d9a44fa..bcbd8db 100644
+--- a/src/renderer/src/features/layout/logic/layoutCoordinator.ts
++++ b/src/renderer/src/features/layout/logic/layoutCoordinator.ts
+@@ -2,6 +2,7 @@
+ import { type Ref } from 'vue'
+ import * as Engine from './layoutEngine'
+ import * as Layout from '../models/PageLayout'
++import * as LayoutUtils from '../models/LayoutUtils'
+ 
+ // 1. 精准关闭：根据 layerId 定位层，只在那棵树里删
+ export const handleCloseFolder = (
+@@ -114,3 +115,93 @@ export const handleDetachShell = (
+     }
+   }
+ }
++
++export const handleDetachTab = (
++  state: { workspace: Layout.WorkspaceState; drag: Ref<Layout.ExtractOperation | null> },
++  action: {
++    id: string
++    tabName: string
++    layerId: string
++    clientX: number
++    clientY: number
++    width: number
++    height: number
++    dragOffset?: [number, number]
++  }
++): void => {
++  const sourceLayer = state.workspace.layer.find((l) => l.id === action.layerId)
++
++  if (!sourceLayer) {
++    console.error(`未找到 ID 为 ${action.layerId} 的源图层`)
++    return
++  }
++
++  if (sourceLayer.isDragLayer) {
++    console.warn(`标签 ${action.tabName} 已经在自由层，不允许再次分离`)
++    return
++  }
++
++  const targetLayer = state.workspace.layer.find((l) => l.isDragLayer)
++  if (!targetLayer) return
++
++  const rootShell = targetLayer.root.data[0]
++  const fullFreeCanvas = rootShell.type === 'shell' ? rootShell.data[0] : null
++
++  if (!fullFreeCanvas || fullFreeCanvas.type !== 'full-free-canvas') {
++    console.error('严重错误：拖拽层内部没有找到 full-free-canvas 容器！')
++    return
++  }
++
++  let targetLeaf: Layout.TabLeafData | null = null
++
++  Engine.walkTree([sourceLayer.root], (node) => {
++    if ('activeTabName' in node && node.id === action.id) {
++      targetLeaf = node as Layout.TabLeafData
++      return true
++    }
++  })
++
++  if (!targetLeaf) {
++    console.error(`未找到 ID 为 ${action.id} 的标签叶子节点`)
++    return
++  }
++
++  const extractResult = Engine.extractTabFromLeaf(targetLeaf, action.tabName)
++  if (!extractResult) {
++    console.warn(`无法从叶子节点 ${action.id} 中提取标签 ${action.tabName}（可能只剩一个标签）`)
++    return
++  }
++
++  const { extractedLeaf } = extractResult
++
++  const newShellId = `shell-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`
++  const newLeafId = `leaf-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`
++
++  const newLeaf: Layout.TabLeafData = {
++    ...extractedLeaf,
++    id: newLeafId
++  }
++
++  const newShell: Layout.ShellTabFolderData = {
++    type: 'shell',
++    id: newShellId,
++    ratio: LayoutUtils.makeRatio(0.2),
++    data: [newLeaf]
++  }
++
++  const offset = action.dragOffset || [0, 0]
++
++  const success = Engine.insertNodeIntoTree([targetLayer.root], fullFreeCanvas.id, newShell, {
++    position: [action.clientX - offset[0], action.clientY - offset[1]],
++    size: [action.width, action.height]
++  })
++
++  if (success) {
++    state.drag.value = {
++      operationType: 'extract-tab',
++      id: newShellId,
++      tabName: action.tabName,
++      dragOffset: offset
++    }
++  }
++}
+diff --git a/src/renderer/src/features/layout/logic/layoutEngine.ts b/src/renderer/src/features/layout/logic/layoutEngine.ts
+index 8dae5c2..40c39cf 100644
+--- a/src/renderer/src/features/layout/logic/layoutEngine.ts
++++ b/src/renderer/src/features/layout/logic/layoutEngine.ts
+@@ -178,3 +178,44 @@ export const insertNodeIntoTree = (
+     return true
+   })
+ }
++
++/**
++ * 从TabLeafData中提取指定标签，创建新的TabLeafData
++ * @param leaf 原始标签叶子节点
++ * @param tabName 要提取的标签名称
++ * @returns 提取结果：包含新的leaf和被移除的tab，如果原leaf只剩一个标签则返回null
++ */
++export const extractTabFromLeaf = (
++  leaf: Layout.TabLeafData,
++  tabName: string
++): { extractedLeaf: Layout.TabLeafData; removedTab: Layout.TabData } | null => {
++  if (leaf.data.length <= 1) {
++    return null
++  }
++
++  const tabIndex = leaf.data.findIndex((t) => t.tabName === tabName)
++  if (tabIndex === -1) {
++    console.warn(`标签 ${tabName} 不存在于叶子节点 ${leaf.id} 中`)
++    return null
++  }
++
++  const removedTab = leaf.data[tabIndex]
++
++  const newLeafData: Layout.TabData[] = leaf.data.filter((t) => t.tabName !== tabName)
++
++  const extractedLeaf: Layout.TabLeafData = {
++    id: leaf.id,
++    type: 'normal',
++    activeTabName: removedTab.tabName,
++    tabHeaderPosition: leaf.tabHeaderPosition,
++    data: [removedTab]
++  }
++
++  leaf.data = newLeafData
++
++  if (!leaf.data.some((t) => t.tabName === leaf.activeTabName)) {
++    leaf.activeTabName = leaf.data[0].tabName
++  }
++
++  return { extractedLeaf, removedTab }
++}
+diff --git a/src/renderer/src/features/layout/views/TabPanel.vue b/src/renderer/src/features/layout/views/TabPanel.vue
+index 288c023..b702476 100644
+--- a/src/renderer/src/features/layout/views/TabPanel.vue
++++ b/src/renderer/src/features/layout/views/TabPanel.vue
+@@ -81,14 +81,27 @@ let isDragging = false
+ let startX = 0
+ let startY = 0
+ let hasStartedDragging = false
++let draggingTabName: string | null = null
+ 
+ const handleMouseDown = (e: MouseEvent): void => {
+   const target = e.target as HTMLElement
++  const tabItem = target.closest('.tab__item')
++  const closeItem = target.closest('.tab__close')
+ 
+-  if (target.closest('.tab__item') || target.closest('.tab__close')) {
++  if (closeItem) {
+     return
+   }
+ 
++  if (tabItem) {
++    const tabTitle = tabItem.textContent?.trim()
++    if (tabTitle) {
++      const tab = leafData.value.data.find((t) => t.title === tabTitle)
++      if (tab) {
++        draggingTabName = tab.tabName
++      }
++    }
++  }
++
+   isDragging = true
+   startX = e.clientX
+   startY = e.clientY
+@@ -110,18 +123,48 @@ const handleMouseMove = (e: MouseEvent): void => {
+ 
+     if (tabRef.value) {
+       const rect = tabRef.value.getBoundingClientRect()
+-      const dragOffset: [number, number] = [startX - rect.left, startY - rect.top]
+-
+-      dispatch({
+-        type: 'DETACH_SHELL',
+-        id: props.folderId,
+-        layerId: layerId!,
+-        clientX: startX,
+-        clientY: startY,
+-        width: rect.width,
+-        height: rect.height,
+-        dragOffset
+-      })
++      let dragOffset: [number, number]
++
++      if (draggingTabName && leafData.value.data.length > 1) {
++        const tabItem = Array.from(tabRef.value.querySelectorAll('.tab__item')).find(
++          item => {
++            const tab = leafData.value.data.find(t => t.tabName === draggingTabName)
++            return tab && item.textContent?.trim() === tab.title
++          }
++        )
++
++        if (tabItem) {
++          const tabRect = tabItem.getBoundingClientRect()
++          dragOffset = [startX - tabRect.left, startY - tabRect.top]
++        } else {
++          dragOffset = [startX - rect.left, startY - rect.top]
++        }
++
++        dispatch({
++          type: 'DETACH_TAB',
++          id: leafData.value.id,
++          tabName: draggingTabName,
++          layerId: layerId!,
++          clientX: startX,
++          clientY: startY,
++          width: rect.width,
++          height: rect.height,
++          dragOffset
++        })
++      } else {
++        dragOffset = [startX - rect.left, startY - rect.top]
++
++        dispatch({
++          type: 'DETACH_SHELL',
++          id: props.folderId,
++          layerId: layerId!,
++          clientX: startX,
++          clientY: startY,
++          width: rect.width,
++          height: rect.height,
++          dragOffset
++        })
++      }
+     }
+ 
+     isDragging = false
+@@ -133,6 +176,7 @@ const handleMouseMove = (e: MouseEvent): void => {
+ const handleMouseUp = (): void => {
+   isDragging = false
+   hasStartedDragging = false
++  draggingTabName = null
+   document.removeEventListener('mousemove', handleMouseMove)
+   document.removeEventListener('mouseup', handleMouseUp)
+ }
