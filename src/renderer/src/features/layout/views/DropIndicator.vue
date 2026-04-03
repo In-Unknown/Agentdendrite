@@ -5,8 +5,16 @@ import { dropPreview, workspaceState, globalDragState } from '../stores/useLayou
 const GAP_THRESHOLD = 16
 const MIN_GAP_SIZE = 4
 
+const preview = computed(() => dropPreview.value)
+
 const isHorizontalLine = computed(() => {
-  return dropPreview.width > dropPreview.height
+  if (
+    preview.value.operationType === 'insert-gap' ||
+    preview.value.operationType === 'split-insert'
+  ) {
+    return preview.value.width > preview.value.height
+  }
+  return true
 })
 
 interface GapPosition {
@@ -77,12 +85,13 @@ function calculateGapPosition(mouseX: number, mouseY: number): void {
   }
 
   const canvasElements = targetLayerElement.querySelectorAll('.Tab-folder-canvas')
-  const foundGaps: GapPosition[] = []
+  const foundGaps: (GapPosition & { containerId: string | null; index: number })[] = []
 
   for (let i = 0; i < canvasElements.length; i++) {
     const canvasEl = canvasElements[i]
     const canvasRect = canvasEl.getBoundingClientRect()
     const isHorizontal = canvasEl.classList.contains('is-row')
+    const containerId = (canvasEl as HTMLElement).dataset.containerId || null
     const shellContainers = Array.from(canvasEl.querySelectorAll(':scope > .Tab-folder-item'))
 
     const childRects = shellContainers.map((el) => ({
@@ -156,7 +165,9 @@ function calculateGapPosition(mouseX: number, mouseY: number): void {
           y: relativeY - targetLayerRect.top,
           width: gapWidth,
           height: gapHeight,
-          distance
+          distance,
+          containerId,
+          index: j
         })
       }
     }
@@ -170,24 +181,35 @@ function calculateGapPosition(mouseX: number, mouseY: number): void {
   foundGaps.sort((a, b) => a.distance - b.distance)
   const closestGap = foundGaps[0]
 
-  dropPreview.visible = true
-  dropPreview.type = 'gap'
-  dropPreview.x = closestGap.x
-  dropPreview.y = closestGap.y
-  dropPreview.width = closestGap.width
-  dropPreview.height = closestGap.height
+  dropPreview.value = {
+    visible: true,
+    visualType: 'gap',
+    x: closestGap.x,
+    y: closestGap.y,
+    width: closestGap.width,
+    height: closestGap.height,
+    operationType: 'insert-gap',
+    targetContainerId: closestGap.containerId,
+    targetIndex: closestGap.index
+  }
 }
 
 function hidePreview(): void {
-  dropPreview.visible = false
-  dropPreview.x = 0
-  dropPreview.y = 0
-  dropPreview.width = 0
-  dropPreview.height = 0
+  dropPreview.value = {
+    visible: false,
+    visualType: 'gap',
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    operationType: 'insert-gap',
+    targetContainerId: null,
+    targetIndex: null
+  }
 }
 
 function handleMouseMove(e: MouseEvent): void {
-  if (globalDragState.id) {
+  if (globalDragState.value && globalDragState.value.id) {
     calculateGapPosition(e.clientX, e.clientY)
   } else {
     hidePreview()
@@ -205,14 +227,14 @@ onUnmounted(() => {
 
 <template>
   <div
-    v-if="dropPreview.visible && dropPreview.type === 'gap'"
+    v-if="preview.operationType === 'insert-gap' && preview.visible && preview.visualType === 'gap'"
     class="drop-indicator"
     :class="{ 'is-horizontal': isHorizontalLine }"
     :style="{
-      left: dropPreview.x + 'px',
-      top: dropPreview.y + 'px',
-      width: dropPreview.width + 'px',
-      height: dropPreview.height + 'px'
+      left: preview.x + 'px',
+      top: preview.y + 'px',
+      width: preview.width + 'px',
+      height: preview.height + 'px'
     }"
   >
     <div class="drop-indicator-inner"></div>

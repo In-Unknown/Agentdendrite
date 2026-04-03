@@ -46,6 +46,7 @@ const normalizedChildren = computed(() => {
     v-if="folderData.type === 'canvas'"
     class="Tab-folder-canvas"
     :class="`is-${folderData.direction}`"
+    :data-container-id="folderData.id"
   >
     <div
       v-for="child in normalizedChildren"
