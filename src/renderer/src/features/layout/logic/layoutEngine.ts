@@ -178,3 +178,44 @@ export const insertNodeIntoTree = (
     return true
   })
 }
+
+/**
+ * 从TabLeafData中提取指定标签，创建新的TabLeafData
+ * @param leaf 原始标签叶子节点
+ * @param tabName 要提取的标签名称
+ * @returns 提取结果：包含新的leaf和被移除的tab，如果原leaf只剩一个标签则返回null
+ */
+export const extractTabFromLeaf = (
+  leaf: Layout.TabLeafData,
+  tabName: string
+): { extractedLeaf: Layout.TabLeafData; removedTab: Layout.TabData } | null => {
+  if (leaf.data.length <= 1) {
+    return null
+  }
+
+  const tabIndex = leaf.data.findIndex((t) => t.tabName === tabName)
+  if (tabIndex === -1) {
+    console.warn(`标签 ${tabName} 不存在于叶子节点 ${leaf.id} 中`)
+    return null
+  }
+
+  const removedTab = leaf.data[tabIndex]
+
+  const newLeafData: Layout.TabData[] = leaf.data.filter((t) => t.tabName !== tabName)
+
+  const extractedLeaf: Layout.TabLeafData = {
+    id: leaf.id,
+    type: 'normal',
+    activeTabName: removedTab.tabName,
+    tabHeaderPosition: leaf.tabHeaderPosition,
+    data: [removedTab]
+  }
+
+  leaf.data = newLeafData
+
+  if (!leaf.data.some((t) => t.tabName === leaf.activeTabName)) {
+    leaf.activeTabName = leaf.data[0].tabName
+  }
+
+  return { extractedLeaf, removedTab }
+}

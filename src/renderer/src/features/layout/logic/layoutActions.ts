@@ -5,7 +5,8 @@ import {
   handleCloseFolder,
   handleSetActiveTab,
   handleMoveNode,
-  handleDetachShell
+  handleDetachShell,
+  handleDetachTab
 } from './layoutCoordinator'
 
 export type LayoutAction =
@@ -25,6 +26,17 @@ export type LayoutAction =
   | {
       type: 'DETACH_SHELL'
       id: string
+      layerId: string
+      clientX: number
+      clientY: number
+      width: number
+      height: number
+      dragOffset?: [number, number]
+    }
+  | {
+      type: 'DETACH_TAB'
+      id: string
+      tabName: string
       layerId: string
       clientX: number
       clientY: number
@@ -64,6 +76,10 @@ export const dispatchAction = (
 
     case 'DETACH_SHELL':
       handleDetachShell(state, action)
+      break
+
+    case 'DETACH_TAB':
+      handleDetachTab(state, action)
       break
   }
 }

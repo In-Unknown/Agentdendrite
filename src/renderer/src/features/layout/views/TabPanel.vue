@@ -81,12 +81,25 @@ let isDragging = false
 let startX = 0
 let startY = 0
 let hasStartedDragging = false
+let draggingTabName: string | null = null
 
 const handleMouseDown = (e: MouseEvent): void => {
   const target = e.target as HTMLElement
+  const tabItem = target.closest('.tab__item')
+  const closeItem = target.closest('.tab__close')
 
-  if (target.closest('.tab__item') || target.closest('.tab__close')) {
+  if (closeItem) {
     return
+  }
+
+  if (tabItem) {
+    const tabTitle = tabItem.textContent?.trim()
+    if (tabTitle) {
+      const tab = leafData.value.data.find((t) => t.title === tabTitle)
+      if (tab) {
+        draggingTabName = tab.tabName
+      }
+    }
   }
 
   isDragging = true
@@ -110,18 +123,48 @@ const handleMouseMove = (e: MouseEvent): void => {
 
     if (tabRef.value) {
       const rect = tabRef.value.getBoundingClientRect()
-      const dragOffset: [number, number] = [startX - rect.left, startY - rect.top]
+      let dragOffset: [number, number]
 
-      dispatch({
-        type: 'DETACH_SHELL',
-        id: props.folderId,
-        layerId: layerId!,
-        clientX: startX,
-        clientY: startY,
-        width: rect.width,
-        height: rect.height,
-        dragOffset
-      })
+      if (draggingTabName && leafData.value.data.length > 1) {
+        const tabItem = Array.from(tabRef.value.querySelectorAll('.tab__item')).find(
+          item => {
+            const tab = leafData.value.data.find(t => t.tabName === draggingTabName)
+            return tab && item.textContent?.trim() === tab.title
+          }
+        )
+
+        if (tabItem) {
+          const tabRect = tabItem.getBoundingClientRect()
+          dragOffset = [startX - tabRect.left, startY - tabRect.top]
+        } else {
+          dragOffset = [startX - rect.left, startY - rect.top]
+        }
+
+        dispatch({
+          type: 'DETACH_TAB',
+          id: leafData.value.id,
+          tabName: draggingTabName,
+          layerId: layerId!,
+          clientX: startX,
+          clientY: startY,
+          width: rect.width,
+          height: rect.height,
+          dragOffset
+        })
+      } else {
+        dragOffset = [startX - rect.left, startY - rect.top]
+
+        dispatch({
+          type: 'DETACH_SHELL',
+          id: props.folderId,
+          layerId: layerId!,
+          clientX: startX,
+          clientY: startY,
+          width: rect.width,
+          height: rect.height,
+          dragOffset
+        })
+      }
     }
 
     isDragging = false
@@ -133,6 +176,7 @@ const handleMouseMove = (e: MouseEvent): void => {
 const handleMouseUp = (): void => {
   isDragging = false
   hasStartedDragging = false
+  draggingTabName = null
   document.removeEventListener('mousemove', handleMouseMove)
   document.removeEventListener('mouseup', handleMouseUp)
 }
