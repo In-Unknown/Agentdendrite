@@ -113,15 +113,14 @@ const handleMouseMove = (e: MouseEvent): void => {
       const dragOffset: [number, number] = [startX - rect.left, startY - rect.top]
 
       dispatch({
-        type: 'DETACH_NODE',
+        type: 'DETACH_SHELL',
         id: props.folderId,
         layerId: layerId!,
         clientX: startX,
         clientY: startY,
         width: rect.width,
         height: rect.height,
-        dragOffset,
-        tabName: leafData.value.activeTabName
+        dragOffset
       })
     }
 

@@ -181,11 +181,21 @@ interface WithVisual {
 // 4.3 具体的提取操作类型 - 使用字段池 + 组合模式
 // 提取操作：从现有布局中拖拽出某个对象
 
+/**
+ * 提取整个 Shell
+ * 已实现：从布局中提取整个 Shell（包含所有标签）
+ */
 type ExtractShell = WithId & WithDragOffset & { operationType: 'extract-shell' }
 
+/**
+ * 提取单个标签
+ * 未实现：此类型保留用于未来扩展，当前代码中没有任何地方实际执行单个标签的提取
+ * 注意：不要与 ExtractShell 混淆，两者是完全不同的功能
+ */
 type ExtractTab = WithId & WithTabName & WithDragOffset & { operationType: 'extract-tab' }
 
 // 4.4 提取操作联合类型 - 所有提取操作的联合
+// 当前只有 ExtractShell 实际被实现和使用
 export type ExtractOperation = ExtractShell | ExtractTab
 
 // 4.5 具体的插入操作类型 - 使用字段池 + 组合模式

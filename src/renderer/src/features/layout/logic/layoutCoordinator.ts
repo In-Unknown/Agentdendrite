@@ -62,7 +62,7 @@ export const handleMoveNode = (
   return false
 }
 
-export const handleDetachNode = (
+export const handleDetachShell = (
   state: { workspace: Layout.WorkspaceState; drag: Ref<Layout.ExtractOperation | null> },
   action: {
     id: string
@@ -72,7 +72,6 @@ export const handleDetachNode = (
     width: number
     height: number
     dragOffset?: [number, number]
-    tabName?: string
   }
 ): void => {
   const sourceLayer = state.workspace.layer.find((l) => l.id === action.layerId)
@@ -108,19 +107,10 @@ export const handleDetachNode = (
   )
 
   if (success) {
-    if (action.tabName) {
-      state.drag.value = {
-        operationType: 'extract-tab',
-        id: action.id,
-        tabName: action.tabName,
-        dragOffset: offset
-      }
-    } else {
-      state.drag.value = {
-        operationType: 'extract-shell',
-        id: action.id,
-        dragOffset: offset
-      }
+    state.drag.value = {
+      operationType: 'extract-shell',
+      id: action.id,
+      dragOffset: offset
     }
   }
 }
