@@ -82,7 +82,7 @@ const startDragTracking = (offsetX: number, offsetY: number): void => {
   cleanupDrag = () => {
     document.removeEventListener('mousemove', onMouseMove)
     document.removeEventListener('mouseup', onMouseUp)
-    if (globalDragState.id === item.id) globalDragState.id = null
+    if (globalDragState.value && globalDragState.value.id === item.id) globalDragState.value = null
   }
 }
 
@@ -102,9 +102,13 @@ const startManualDrag = (e: MouseEvent): void => {
 
 onMounted(() => {
   const item = props.folderData
-  if (item.type !== 'full-free-canvas' && globalDragState.id === item.id) {
+  if (
+    item.type !== 'full-free-canvas' &&
+    globalDragState.value &&
+    globalDragState.value.id === item.id
+  ) {
     bringToFront()
-    startDragTracking(globalDragState.dragOffset[0], globalDragState.dragOffset[1])
+    startDragTracking(globalDragState.value.dragOffset[0], globalDragState.value.dragOffset[1])
   }
 })
 

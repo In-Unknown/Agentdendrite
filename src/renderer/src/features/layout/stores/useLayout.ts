@@ -1,10 +1,11 @@
 // src/renderer/src/features/layout/stores/useLayout.ts
-import { reactive } from 'vue'
+import { reactive, ref } from 'vue'
 import type {
   CanvasTabFolderData,
   LayoutLayer,
   WorkspaceState,
-  GlobalDragState
+  ExtractOperation,
+  DropDecision
 } from '../models/PageLayout'
 import { makeRatio } from '../models/LayoutUtils'
 import { LayoutAction, dispatchAction } from '../logic/layoutActions'
@@ -359,18 +360,18 @@ export const workspaceState = reactive<WorkspaceState>({
   layer: layoutLayers
 })
 
-export const globalDragState = reactive<GlobalDragState>({
-  id: null,
-  dragOffset: [0, 0]
-})
+export const globalDragState = ref<ExtractOperation | null>(null)
 
-export const dropPreview = reactive({
+export const dropPreview = ref<DropDecision>({
   visible: false,
-  type: 'gap' as 'gap' | 'block',
+  visualType: 'gap',
   x: 0,
   y: 0,
   width: 0,
-  height: 0
+  height: 0,
+  operationType: 'insert-gap',
+  targetContainerId: null,
+  targetIndex: null
 })
 
 export const dispatch = (action: LayoutAction): void => {

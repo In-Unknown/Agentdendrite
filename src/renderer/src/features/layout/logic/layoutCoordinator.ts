@@ -1,4 +1,5 @@
 // src/renderer/src/features/layout/logic/layoutCoordinator.ts
+import { type Ref } from 'vue'
 import * as Engine from './layoutEngine'
 import * as Layout from '../models/PageLayout'
 
@@ -62,7 +63,7 @@ export const handleMoveNode = (
 }
 
 export const handleDetachNode = (
-  state: { workspace: Layout.WorkspaceState; drag: Layout.GlobalDragState },
+  state: { workspace: Layout.WorkspaceState; drag: Ref<Layout.ExtractOperation | null> },
   action: {
     id: string
     layerId: string
@@ -71,6 +72,7 @@ export const handleDetachNode = (
     width: number
     height: number
     dragOffset?: [number, number]
+    tabName?: string
   }
 ): void => {
   const sourceLayer = state.workspace.layer.find((l) => l.id === action.layerId)
@@ -106,7 +108,19 @@ export const handleDetachNode = (
   )
 
   if (success) {
-    state.drag.id = action.id
-    state.drag.dragOffset = offset
+    if (action.tabName) {
+      state.drag.value = {
+        operationType: 'extract-tab',
+        id: action.id,
+        tabName: action.tabName,
+        dragOffset: offset
+      }
+    } else {
+      state.drag.value = {
+        operationType: 'extract-shell',
+        id: action.id,
+        dragOffset: offset
+      }
+    }
   }
 }

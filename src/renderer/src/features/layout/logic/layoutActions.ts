@@ -1,4 +1,5 @@
 // src/renderer/src/features/layout/logic/layoutActions.ts
+import { type Ref } from 'vue'
 import * as Layout from '../models/PageLayout'
 import {
   handleCloseFolder,
@@ -30,10 +31,11 @@ export type LayoutAction =
       width: number
       height: number
       dragOffset?: [number, number]
+      tabName?: string
     }
 
 export const dispatchAction = (
-  state: { workspace: Layout.WorkspaceState; drag: Layout.GlobalDragState },
+  state: { workspace: Layout.WorkspaceState; drag: Ref<Layout.ExtractOperation | null> },
   action: LayoutAction
 ): void => {
   switch (action.type) {

@@ -120,7 +120,8 @@ const handleMouseMove = (e: MouseEvent): void => {
         clientY: startY,
         width: rect.width,
         height: rect.height,
-        dragOffset
+        dragOffset,
+        tabName: leafData.value.activeTabName
       })
     }
 
