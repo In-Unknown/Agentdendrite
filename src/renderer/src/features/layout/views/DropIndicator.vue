@@ -101,7 +101,6 @@ function calculateGapPosition(mouseX: number, mouseY: number): void {
 
     for (let j = 0; j <= childRects.length; j++) {
       let gapRect: DOMRect
-      let gapSize: number
 
       if (j === 0) {
         if (isHorizontal) {
@@ -119,7 +118,6 @@ function calculateGapPosition(mouseX: number, mouseY: number): void {
             childRects[0]?.rect.top - canvasRect.top || 0
           )
         }
-        gapSize = isHorizontal ? gapRect.width : gapRect.height
       } else if (j === childRects.length) {
         if (isHorizontal) {
           const prevRight = childRects[j - 1].rect.right
@@ -138,7 +136,6 @@ function calculateGapPosition(mouseX: number, mouseY: number): void {
             canvasRect.bottom - prevBottom
           )
         }
-        gapSize = isHorizontal ? gapRect.width : gapRect.height
       } else {
         if (isHorizontal) {
           const prevRight = childRects[j - 1].rect.right
@@ -149,22 +146,35 @@ function calculateGapPosition(mouseX: number, mouseY: number): void {
           const nextTop = childRects[j].rect.top
           gapRect = new DOMRect(canvasRect.left, prevBottom, canvasRect.width, nextTop - prevBottom)
         }
-        gapSize = isHorizontal ? gapRect.width : gapRect.height
       }
 
       const distance = calculateDistanceToGap(mouseX, mouseY, gapRect, isHorizontal)
 
       if (distance < GAP_THRESHOLD) {
-        const relativeX = isHorizontal ? gapRect.left : canvasRect.left
-        const relativeY = isHorizontal ? canvasRect.top : gapRect.top
-        const gapWidth = isHorizontal ? Math.max(gapSize, MIN_GAP_SIZE) : canvasRect.width
-        const gapHeight = isHorizontal ? canvasRect.height : Math.max(gapSize, MIN_GAP_SIZE)
+        let x: number
+        let y: number
+        let width: number
+        let height: number
+
+        if (isHorizontal) {
+          const gapCenter = gapRect.left + gapRect.width / 2
+          x = gapCenter - targetLayerRect.left - MIN_GAP_SIZE / 2
+          y = canvasRect.top - targetLayerRect.top
+          width = MIN_GAP_SIZE
+          height = canvasRect.height
+        } else {
+          const gapCenter = gapRect.top + gapRect.height / 2
+          x = canvasRect.left - targetLayerRect.left
+          y = gapCenter - targetLayerRect.top - MIN_GAP_SIZE / 2
+          width = canvasRect.width
+          height = MIN_GAP_SIZE
+        }
 
         foundGaps.push({
-          x: relativeX - targetLayerRect.left,
-          y: relativeY - targetLayerRect.top,
-          width: gapWidth,
-          height: gapHeight,
+          x,
+          y,
+          width,
+          height,
           distance,
           containerId,
           index: j
