@@ -66,8 +66,12 @@ const startDragTracking = (offsetX: number, offsetY: number): void => {
   const maxY = baseHeight - 15
 
   const onMouseMove = (e: MouseEvent): void => {
-    const nextX = e.clientX - offsetX
-    const nextY = e.clientY - offsetY
+    const rect = parentEl?.getBoundingClientRect()
+    const layerX = rect ? rect.left : 0
+    const layerY = rect ? rect.top : 0
+
+    const nextX = e.clientX - layerX - offsetX
+    const nextY = e.clientY - layerY - offsetY
     item.position[0] = Math.max(0, Math.min(nextX, maxX))
     item.position[1] = Math.max(0, Math.min(nextY, maxY))
   }
@@ -95,8 +99,14 @@ const startManualDrag = (e: MouseEvent): void => {
   if (item.type === 'full-free-canvas') return
   e.preventDefault()
   bringToFront()
-  const offsetX = e.clientX - item.position[0]
-  const offsetY = e.clientY - item.position[1]
+
+  const parentEl = containerRef.value?.parentElement
+  const rect = parentEl?.getBoundingClientRect()
+  const layerX = rect ? rect.left : 0
+  const layerY = rect ? rect.top : 0
+
+  const offsetX = e.clientX - layerX - item.position[0]
+  const offsetY = e.clientY - layerY - item.position[1]
   startDragTracking(offsetX, offsetY)
 }
 
