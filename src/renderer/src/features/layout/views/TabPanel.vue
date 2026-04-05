@@ -123,15 +123,19 @@ const handleMouseMove = (e: MouseEvent): void => {
 
     if (tabRef.value) {
       const rect = tabRef.value.getBoundingClientRect()
+
+      const offsetParent = tabRef.value.closest('.layer-wrapper')?.parentElement
+      const parentRect = offsetParent?.getBoundingClientRect() || { left: 0, top: 0 }
+      const layerMouseX = startX - parentRect.left
+      const layerMouseY = startY - parentRect.top
+
       let dragOffset: [number, number]
 
       if (draggingTabName && leafData.value.data.length > 1) {
-        const tabItem = Array.from(tabRef.value.querySelectorAll('.tab__item')).find(
-          item => {
-            const tab = leafData.value.data.find(t => t.tabName === draggingTabName)
-            return tab && item.textContent?.trim() === tab.title
-          }
-        )
+        const tabItem = Array.from(tabRef.value.querySelectorAll('.tab__item')).find((item) => {
+          const tab = leafData.value.data.find((t) => t.tabName === draggingTabName)
+          return tab && item.textContent?.trim() === tab.title
+        })
 
         if (tabItem) {
           const tabRect = tabItem.getBoundingClientRect()
@@ -139,30 +143,34 @@ const handleMouseMove = (e: MouseEvent): void => {
         } else {
           dragOffset = [startX - rect.left, startY - rect.top]
         }
+      } else {
+        dragOffset = [startX - rect.left, startY - rect.top]
+      }
 
+      const verticalCompensation = 13
+
+      if (draggingTabName && leafData.value.data.length > 1) {
         dispatch({
           type: 'DETACH_TAB',
           id: leafData.value.id,
           tabName: draggingTabName,
           layerId: layerId!,
-          clientX: startX,
-          clientY: startY,
+          clientX: layerMouseX,
+          clientY: layerMouseY - verticalCompensation,
           width: rect.width,
-          height: rect.height,
-          dragOffset
+          height: rect.height + verticalCompensation,
+          dragOffset: [dragOffset[0], dragOffset[1] + verticalCompensation]
         })
       } else {
-        dragOffset = [startX - rect.left, startY - rect.top]
-
         dispatch({
           type: 'DETACH_SHELL',
           id: props.folderId,
           layerId: layerId!,
-          clientX: startX,
-          clientY: startY,
+          clientX: layerMouseX,
+          clientY: layerMouseY - verticalCompensation,
           width: rect.width,
-          height: rect.height,
-          dragOffset
+          height: rect.height + verticalCompensation,
+          dragOffset: [dragOffset[0], dragOffset[1] + verticalCompensation]
         })
       }
     }
