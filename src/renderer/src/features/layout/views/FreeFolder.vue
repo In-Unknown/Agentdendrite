@@ -14,13 +14,15 @@ import type {
   CanvasFreeFolderData
 } from '../models/PageLayout'
 import { globalDragState } from '../stores/useLayout'
+import { startDrag, cancelDrag } from '../logic/useDragManager'
 import TabPanel from './TabPanel.vue'
 
 const props = defineProps<{
   folderData: FreeFolderItem | FullCanvasFreeFolderData
 }>()
 
-// 用于获取当前组件的 DOM 实例
+let ownsDragSession = false
+
 const containerRef = ref<HTMLElement | null>(null)
 
 const containerStyle = computed(() => {
@@ -40,6 +42,10 @@ const containerStyle = computed(() => {
     style.top = `${item.position[1]}px`
     style.position = 'absolute'
     style.zIndex = item.zIndex || 1
+
+    if (globalDragState.value && globalDragState.value.id === item.id) {
+      style.opacity = 0.6
+    }
   }
 
   return style
@@ -53,8 +59,6 @@ const bringToFront = (): void => {
   ;(item as ShellFreeFolderData | CanvasFreeFolderData).zIndex = globalMaxZIndex
 }
 
-let cleanupDrag = (): void => {}
-
 const startDragTracking = (offsetX: number, offsetY: number): void => {
   const item = props.folderData
   if (item.type === 'full-free-canvas') return
@@ -65,33 +69,25 @@ const startDragTracking = (offsetX: number, offsetY: number): void => {
   const maxX = baseWidth - 15
   const maxY = baseHeight - 15
 
-  const onMouseMove = (e: MouseEvent): void => {
-    const rect = parentEl?.getBoundingClientRect()
-    const layerX = rect ? rect.left : 0
-    const layerY = rect ? rect.top : 0
+  startDrag(item.id, {
+    onMove: (clientX, clientY) => {
+      const rect = parentEl?.getBoundingClientRect()
+      const layerX = rect ? rect.left : 0
+      const layerY = rect ? rect.top : 0
 
-    const nextX = e.clientX - layerX - offsetX
-    const nextY = e.clientY - layerY - offsetY
-    item.position[0] = Math.max(0, Math.min(nextX, maxX))
-    item.position[1] = Math.max(0, Math.min(nextY, maxY))
-  }
-
-  const onMouseUp = (): void => {
-    stopDragTracking()
-  }
-
-  document.addEventListener('mousemove', onMouseMove)
-  document.addEventListener('mouseup', onMouseUp)
-
-  cleanupDrag = () => {
-    document.removeEventListener('mousemove', onMouseMove)
-    document.removeEventListener('mouseup', onMouseUp)
-    if (globalDragState.value && globalDragState.value.id === item.id) globalDragState.value = null
-  }
-}
-
-const stopDragTracking = (): void => {
-  cleanupDrag()
+      const nextX = clientX - layerX - offsetX
+      const nextY = clientY - layerY - offsetY
+      item.position[0] = Math.max(0, Math.min(nextX, maxX))
+      item.position[1] = Math.max(0, Math.min(nextY, maxY))
+    },
+    onEnd: () => {
+      ownsDragSession = false
+      if (globalDragState.value && globalDragState.value.id === item.id) {
+        globalDragState.value = null
+      }
+    }
+  })
+  ownsDragSession = true
 }
 
 const startManualDrag = (e: MouseEvent): void => {
@@ -110,6 +106,28 @@ const startManualDrag = (e: MouseEvent): void => {
   startDragTracking(offsetX, offsetY)
 }
 
+const onTabDragStart = (clientX: number, clientY: number): void => {
+  const item = props.folderData
+  if (item.type !== 'free-shell') return
+  bringToFront()
+
+  const parentEl = containerRef.value?.parentElement
+  const rect = parentEl?.getBoundingClientRect()
+  const layerX = rect ? rect.left : 0
+  const layerY = rect ? rect.top : 0
+
+  const offsetX = clientX - layerX - item.position[0]
+  const offsetY = clientY - layerY - item.position[1]
+
+  globalDragState.value = {
+    operationType: 'extract-shell',
+    id: item.id,
+    dragOffset: [offsetX, offsetY]
+  }
+
+  startDragTracking(offsetX, offsetY)
+}
+
 onMounted(() => {
   const item = props.folderData
   if (
@@ -123,7 +141,10 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  stopDragTracking()
+  const item = props.folderData
+  if (item.type !== 'full-free-canvas' && ownsDragSession) {
+    cancelDrag(item.id)
+  }
 })
 </script>
 
@@ -149,7 +170,11 @@ onUnmounted(() => {
     <div class="free-folder-content">
       <!-- 如果是叶子节点（free-shell），显示标签面板 -->
       <template v-if="folderData.type === 'free-shell'">
-        <TabPanel :leaf-data="folderData.data[0]" :folder-id="folderData.id" />
+        <TabPanel
+          :leaf-data="folderData.data[0]"
+          :folder-id="folderData.id"
+          @drag-start="onTabDragStart"
+        />
       </template>
 
       <!-- 如果是容器节点（canvas），递归渲染子文件夹 -->

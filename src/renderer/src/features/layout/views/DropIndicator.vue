@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from 'vue'
 import { dropPreview, workspaceState, globalDragState } from '../stores/useLayout'
+import { subscribeToMove, subscribeToEnd } from '../logic/useDragManager'
 
 const GAP_THRESHOLD = 16
 const MIN_GAP_SIZE = 4
@@ -218,20 +219,26 @@ function hidePreview(): void {
   }
 }
 
-function handleMouseMove(e: MouseEvent): void {
-  if (globalDragState.value && globalDragState.value.id) {
-    calculateGapPosition(e.clientX, e.clientY)
-  } else {
-    hidePreview()
-  }
-}
+let unsubMove: (() => void) | null = null
+let unsubEnd: (() => void) | null = null
 
 onMounted(() => {
-  document.addEventListener('mousemove', handleMouseMove)
+  unsubMove = subscribeToMove((clientX, clientY) => {
+    if (globalDragState.value && globalDragState.value.id) {
+      calculateGapPosition(clientX, clientY)
+    } else {
+      hidePreview()
+    }
+  })
+
+  unsubEnd = subscribeToEnd(() => {
+    hidePreview()
+  })
 })
 
 onUnmounted(() => {
-  document.removeEventListener('mousemove', handleMouseMove)
+  unsubMove?.()
+  unsubEnd?.()
 })
 </script>
 

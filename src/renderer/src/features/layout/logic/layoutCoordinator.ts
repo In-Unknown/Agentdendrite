@@ -85,7 +85,10 @@ export const handleDetachShell = (
   const targetLayer = state.workspace.layer.find((l) => l.isDragLayer)
   if (!targetLayer) return
 
+  // 拖拽层的结构是 canvas → shell → full-free-canvas，这里要拿到最内层的 full-free-canvas
+  // 拖拽层根 Canvas 里的第一个子元素，应该是一个 shell
   const rootShell = targetLayer.root.data[0]
+  // shell 里包着的 full-free-canvas
   const fullFreeCanvas = rootShell.type === 'shell' ? rootShell.data[0] : null
 
   if (!fullFreeCanvas || fullFreeCanvas.type !== 'full-free-canvas') {
@@ -95,6 +98,8 @@ export const handleDetachShell = (
 
   const offset = action.dragOffset || [0, 0]
 
+  // 将节点从源层移动到拖拽层的 full-free-canvas 中
+  // handleMoveNode 内部会：extractNodeFromTree 从源层拔出 → insertNodeIntoTree 插入目标层
   const success = handleMoveNode(
     state.workspace.layer,
     action.id,
@@ -102,11 +107,13 @@ export const handleDetachShell = (
     action.layerId,
     targetLayer.id,
     {
+      // 计算浮动窗口的初始位置：鼠标位置减去拖拽偏移量
       position: [action.clientX - offset[0], action.clientY - offset[1]],
       size: [action.width, action.height]
     }
   )
 
+  // 移动成功后，记录拖拽状态，让 FreeFolder.vue 接管后续的拖拽追踪
   if (success) {
     state.drag.value = {
       operationType: 'extract-shell',

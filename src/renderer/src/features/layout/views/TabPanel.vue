@@ -2,7 +2,11 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, toRefs, type Component, inject, ref } from 'vue'
 import type { TabLeafData } from '../models/PageLayout'
-import { dispatch } from '../stores/useLayout'
+import { dispatch, layoutLayers } from '../stores/useLayout'
+
+const emit = defineEmits<{
+  (e: 'drag-start', clientX: number, clientY: number): void
+}>()
 
 const layerId = inject<string>('LAYER_ID')
 
@@ -149,7 +153,12 @@ const handleMouseMove = (e: MouseEvent): void => {
 
       const verticalCompensation = 13
 
-      if (draggingTabName && leafData.value.data.length > 1) {
+      const isOnDragLayer = layoutLayers.some((l) => l.id === layerId && l.isDragLayer)
+      const isBlankArea = !draggingTabName || leafData.value.data.length <= 1
+
+      if (isOnDragLayer && isBlankArea) {
+        emit('drag-start', startX, startY)
+      } else if (draggingTabName && leafData.value.data.length > 1) {
         dispatch({
           type: 'DETACH_TAB',
           id: leafData.value.id,
