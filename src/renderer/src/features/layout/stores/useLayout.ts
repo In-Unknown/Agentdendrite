@@ -321,16 +321,16 @@ export const topLayoutData = reactive<CanvasTabFolderData>({
               id: 'top-float-win-3',
               type: 'free-shell',
               position: [920, 120],
-              size: [280, 200],
+              size: [1280, 500],
               zIndex: 3,
               backgroundColor: 'rgba(30, 30, 30, 0.95)',
               data: [
                 {
                   id: 'top-leaf-3',
                   type: 'singleton',
-                  activeTabName: 'Clock',
+                  activeTabName: 'QuantumClock',
                   tabHeaderPosition: 'none',
-                  data: [{ title: '时钟', tabName: 'Clock' }]
+                  data: [{ title: '量子时钟', tabName: 'QuantumClock' }]
                 }
               ]
             }
