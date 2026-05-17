@@ -23,6 +23,7 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
+    "decimal.js": "^10.6.0",
     "electron-updater": "^6.3.9",
     "marked": "^17.0.4",
     "shiki": "^4.0.1"

@@ -15,7 +15,7 @@
       "@renderer/*": ["src/renderer/src/*"],
       "@components/*": ["src/renderer/src/components/*"]
     },
-    "types": ["vite/client"]
+    "types": ["vite/client", "node"]
   },
   "include": [
     "src/renderer/src/env.d.ts",

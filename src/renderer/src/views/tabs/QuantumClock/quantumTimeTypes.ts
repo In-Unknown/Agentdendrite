@@ -1,0 +1,30 @@
+export interface QuantumTimeState {
+  qt_P: number
+  qcs: number
+  qis: number
+  qats: number
+  qks: number
+  qrs: number
+  qys: number
+  qzres: number
+  qas: number
+  qfs: number
+  qps: number
+  qns: number
+  qμs: number
+  qms: number
+  qs: number
+  qmin: number
+  qh: number
+  qg: number
+  qq: number
+  qy: number
+  qqc: number
+  qwc: number
+  qcec: number
+  qzc: number
+  qhc: number
+  qjc: number
+  qohc: number
+  qomgc: number
+}

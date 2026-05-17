@@ -24,8 +24,8 @@ import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import MicroTimePanel from './MicroTimePanel.vue'
 import DailyTimePanel from './DailyTimePanel.vue'
 import AstroTimePanel from './AstroTimePanel.vue'
-import { getInitialState, computeTime } from './quantumTime'
-import type { QuantumTimeState } from './quantumTime'
+import { getInitialState, getTickTime } from './quantumTime'
+import type { QuantumTimeState } from './quantumTimeTypes'
 
 const tabs = [
   { key: 'micro' as const, label: '原子时间' },
@@ -36,34 +36,24 @@ const tabs = [
 type TabKey = 'micro' | 'daily' | 'astro'
 const activeTab = ref<TabKey>('daily')
 
+// 初始化 timeState 为包含全部27个字段硬编码初始值的响应式对象
 const timeState = reactive<QuantumTimeState>(getInitialState())
 
-const initialState = getInitialState()
-
-let startHrTime: bigint | null = null
+// 声明帧循环ID，类型为 number 或 null，初始值为 null
 let rafId: number | null = null
 
+// 定义每帧回调函数，调用 getTickTime 更新 timeState
 function tick(): void {
-  if (startHrTime === null) return
-
-  const nowHr = process.hrtime.bigint()
-  const elapsedNs = nowHr - startHrTime
-
-  const newState = computeTime(initialState, elapsedNs)
-
-  const keys = Object.keys(newState) as (keyof QuantumTimeState)[]
-  for (const key of keys) {
-    timeState[key] = newState[key]
-  }
-
+  getTickTime(timeState)
   rafId = requestAnimationFrame(tick)
 }
 
+// 组件挂载时开始帧循环
 onMounted(() => {
-  startHrTime = process.hrtime.bigint()
   rafId = requestAnimationFrame(tick)
 })
 
+// 组件销毁时取消帧循环
 onUnmounted(() => {
   if (rafId !== null) {
     cancelAnimationFrame(rafId)
@@ -83,6 +73,7 @@ onUnmounted(() => {
 
 .quantum-clock__tabs {
   display: flex;
+  justify-content: center;
   gap: 0;
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;

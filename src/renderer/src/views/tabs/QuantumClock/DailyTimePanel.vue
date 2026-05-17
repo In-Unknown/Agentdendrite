@@ -48,7 +48,7 @@
 </template>
 
 <script setup lang="ts">
-import type { QuantumTimeState } from './quantumTime'
+import type { QuantumTimeState } from './quantumTimeTypes'
 import { pad } from './quantumTime'
 
 defineProps<{
